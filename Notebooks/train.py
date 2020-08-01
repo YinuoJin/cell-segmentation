@@ -101,6 +101,8 @@ if __name__ == '__main__':
                         help='Loss rate')
     parser.add_argument('-p', '--patience', dest='patience_counter', type=int, default=30, action='store',
                         help='Patience counter for early-stopping or lr-tuning')
+    parser.add_argument('-a', '--augment', dest='augment', action='store_true',
+                        help='Whether to perform data augmentation in the current run')
     parser.add_argument('--early-stop', dest='early_stop', action='store_true', 
                         help='Whether to perform early-stopping; If False, lr is halved when reaching each patience')
     parser.add_argument('--region-option', dest='region_option', action='store_true',
@@ -115,6 +117,7 @@ if __name__ == '__main__':
 
     # Parse arguments
     root_path = '../datasets/multi_cell_custom_data_without_shapes/' if args.root_path is None else args.root_path
+    augment = args.augment
     n_epochs = args.n_epochs
     lr = args.lr
     batch_size = args.batch_size
@@ -140,30 +143,28 @@ if __name__ == '__main__':
         raise NotImplementedError('Loss function not recognized, available options: (1).bce; (2).jaccard; (3).dice; (4).boundary')
 
     # data augmentation on training & validation sets
-    # print('Performing data augmentation...')
-    # augmentation(root_path)
-    # augmentation(root_path, mode='val')
+    # augmented images are saved to file, no need to run the following code in every run
+    if augment:
+        print('Performing data augmentation...')
+        augmentation(root_path)
+        augmentation(root_path, mode='val')
     
     # load dataset
     print('Loading datasets...')
     print('- Training set:')
-    
-    # debug
-    train_dataset, train_distmap = load_data(root_path, 'train_frames', 'train_masks', enhance=enhance, contour=contour, return_dist=dist)
-    #train_dataset, train_distmap = load_data(root_path, 'train_frames_aug', 'train_masks_aug', enhance=enhance, contour=contour, return_dist=dist)
+    train_dataset, train_distmap = load_data(root_path, 'train_frames_aug', 'train_masks_aug', enhance=enhance, contour=contour, return_dist=dist)
     print('- Validation set:')
-
-    # debug
-    val_dataset, val_distmap = load_data(root_path, 'val_frames', 'val_masks', enhance=enhance, contour=contour, return_dist=dist)
-    #val_dataset, val_distmap = load_data(root_path, 'val_frames_aug', 'val_masks_aug', enhance=enhance, contour=contour, return_dist=dist)
+    val_dataset, val_distmap = load_data(root_path, 'val_frames_aug', 'val_masks_aug', enhance=enhance, contour=contour, return_dist=dist)
+    # print('- Test set':')
     # test_dataset = load_data(root_path, 'test_frames', 'test_masks')
     
     train_dataloader = data.DataLoader(train_dataset, batch_size=batch_size)
-    train_distmap = data.DataLoader(train_distmap, batch_size=batch_size)
     val_dataloader = data.DataLoader(val_dataset, batch_size=batch_size)
-    val_distmap = data.DataLoader(val_distmap, batch_size=batch_size)
     # test_dataloader = data.DataLoader(test_dataset, batch_size=1)
-    
+    if train_distmap is not None:
+        train_distmap = data.DataLoader(train_distmap, batch_size=batch_size)
+        val_distmap = data.DataLoader(val_distmap, batch_size=batch_size)
+ 
     # Initialize network & training, transfer to GPU is available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     net = Unet(1)

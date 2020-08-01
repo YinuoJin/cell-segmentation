@@ -169,13 +169,9 @@ def load_data(root_path, frame, mask, n_channel_frame=1, n_channel_mask=1, heigh
                                                 contour=contour)
     bar.finish()
     dataset = ImageDataLoader(mat_frame, mat_mask)
-    
-    if return_dist is not None:
-        distset = DistmapDataLoader(mat_mask, return_dist)
-        return dataset, distset
-    else:
-        return dataset
+    distset = None if return_dist is None else DistmapDataLoader(mat_mask, return_dist)
 
+    return dataset, distset
 
 def read_images(name1, name2, h, w, enhance=False, contour=False):
     """Read and preprocess the images"""
