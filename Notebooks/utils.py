@@ -1,5 +1,6 @@
 import os
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandas as pd
@@ -7,10 +8,9 @@ import matplotlib.pyplot as plt
 from scipy.spatial import distance
 from mpl_toolkits.mplot3d import Axes3D
 
-
-# +---------------------+
-# |       plots         |
-# +---------------------+
+##########################################
+#  Plots & Transformation
+##########################################
 
 def plot_img_3d_distribution(img, figsize=(8, 6)):
     """
@@ -55,60 +55,142 @@ def plot_img_histogram(img, figsize=(8, 6)):
     plt.legend(('cdf', 'histogram'), loc='upper left')
     plt.show()
     plt.close()
+    
+    
+def get_contour(img):
+    """Get contour of image mask (ground truth or prediction)"""
+    img = img.detach().squeeze().numpy()
+    img = np.round(img * 255.0).astype(np.uint8) # Convert from [0, 1] to [0, 255]
+    _, thresh = cv2.threshold(img, 127, 255, 0)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    img_processed = np.zeros_like(img)
+    cv2.drawContours(img_processed, contours, -1, (255, 255, 255), 1)
+    img_processed = img_processed / 255.0 # Convert back from [0, 255] to [0, 1]
+    
+    return torch.Tensor(np.expand_dims(img_processed, axis=0))
 
 
-# +---------------------+
-# |   loss functions    |
-# +---------------------+
+##########################################
+#  Loss functions
+##########################################
 
 
-def vgg_topo_loss(model, y_true, y_pred, weight=1, mu=0.1):
+class IoULoss(nn.Module):
     """
-    Calculate topo-aware loss function (Mosinska et al. 2018) utilizing feature maps of VGG19
+    Intersection over Union (IoU) / Jaccard loss:
+    Jaccard(A, B) = |A ∩ B| / |A ∪ B|
     
-    Parameters
-    ----------
-    model : torch.nn
-        Pretrained VGG19 model
-    y_true : torch.Tensor
-        Ground truth matrix, shape: [batch_size, C, H, W]
-    y_pred : torch.Tensor
-        Prediction matrix, shape: [batch_size, C, H, W]
-    weight : float
-        weight for BCE loss calculation
-    mu : float
-        multiplier of topo loss
-        
-    Returns
-    -------
-    loss : float
-        Combined loss value of bce loss and topo loss
+    reference: https://github.com/LIVIAETS/surface-loss/blob/master/losses.py
     """
     
-    def _calc_dist(arr):
-        idx = len(arr) // 2
-        return np.power(distance.euclidean(arr[:idx], arr[idx:]), 2)
-    
-    bce_loss = F.binary_cross_entropy_with_logits(y_pred, y_true, weight=torch.Tensor([weight]))
+    def __init__(self, smooth=1e-6):
+        super(IoULoss, self).__init__()
+        self.smooth = smooth
+        
+    def forward(self, y_true, y_pred):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth matrix, shape: [B, C, H, W], C = 1
+        y_pred : torch.Tensor
+            predicted matrix, shape: [B, C, H, W], C = 1
+        """
+        intersection = torch.einsum('bchw,bchw->bc', y_true, y_pred)
+        total = torch.einsum('bchw->bc', y_true) + torch.einsum('bchw->bc', y_pred)
+        union = total - intersection
+        
+        iou = ((intersection + self.smooth) / (union + self.smooth)).mean()
+        
+        return 1 - iou
 
-    y_true = torch.cat((y_true, y_true, y_true), axis=1)
-    y_pred = torch.cat((y_pred, y_pred, y_pred), axis=1)
-    features_true = model(y_true)
-    features_pred = model(y_pred)
-    topo_loss = 0
+
+class SoftDiceLoss(nn.Module):
+    """
+    Soft Dice Loss:
+    Dice(A, B) = (2 * |A ∩ B|) / (|A| + |B|)
     
-    for f_pred, f_true in zip(features_pred, features_true):
-        vec1 = f_pred.detach().squeeze().numpy()
-        vec2 = f_true.detach().squeeze().numpy()
-        assert vec1.shape == vec2.shape
+    reference: https://github.com/LIVIAETS/surface-loss/blob/master/losses.py
+    """
+    
+    def __init__(self, smooth=1e-6):
+        super(SoftDiceLoss, self).__init__()
+        self.smooth = smooth
         
-        n_channels, height, width = vec1.shape
-        multiplier = 1 / (n_channels * height * width)
-        vec = np.concatenate([vec1.reshape(n_channels, -1), vec2.reshape(n_channels, -1)], axis=1)
-        dist = np.sum(
-            np.apply_along_axis(_calc_dist, axis=1, arr=vec)
-        )
+    def forward(self, y_true, y_pred):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth matrix, shape: [B, C, H, W], C = 1
+        y_pred : torch.Tensor
+            predicted matrix, shape: [B, C, H, W], C = 1
+        """
+        intersection = torch.einsum('bchw,bchw->bc', y_true, y_pred)
+        total = torch.einsum('bchw->bc', y_true) + torch.einsum('bchw->bc', y_pred)
         
-        topo_loss += multiplier * dist
+        dice = ((2.0 * intersection + self.smooth) / (total + self.smooth)).mean()
         
-    return bce_loss + mu * topo_loss
+        return 1 - dice
+    
+    
+class SurfaceLoss(nn.Module):
+    """
+    Combination of Region based loss & Contour (boundary)-based loss
+    
+    reference: https://github.com/LIVIAETS/surface-loss/blob/master/losses.py
+    """
+    
+    def __init__(self, alpha=0.5, dice=True):
+        """
+        Parameters
+        ----------
+        alpha : float
+            rate of Region-based loss w.r.t to Boundary-based loss: L = α * L_r + (1 - α) * L_b
+        dice : bool
+            whether to use Soft Dice loss as region-based loss (use Jaccard loss if False)
+        """
+        super(SurfaceLoss, self).__init__()
+        self.alpha = alpha
+        self.use_dice = dice
+        self.region_loss = SoftDiceLoss() if dice else IoULoss()
+        
+    def forward(self, y_true, y_pred, theta_true):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth matrix, shape: [B, C, H, W], C = 1
+        y_pred : torch.Tensor
+            predicted matrix, shape: [B, C, H, W], C = 1
+        theta_true : torch.Tensor
+            level set representation of ground-truth boundary, shape: [B, C, H, W], C = 1
+        """
+        boundary_dist = torch.einsum('bchw,bchw->bchw', y_pred, theta_true)
+        boundary_loss = boundary_dist.mean()
+        region_loss = self.region_loss(y_true, y_pred)
+        
+        return self.alpha * region_loss + (1 - self.alpha) * boundary_loss
+
+
+class DistWeightBCELoss(nn.Module):
+    """
+    Unet-like weighted BCE loss (adding distmaps of each pixel to its closest two foreground neighbors
+    """
+
+    def __init__(self):
+        super(DistWeightBCELoss, self).__init__()
+
+    def forward(self, y_true, y_pred, weight):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth matrix, shape: [B, C, H, W], C = 1
+        y_pred : torch.Tensor
+            predicted matrix, shape: [B, C, H, W], C = 1
+        weight : torch.Tensor
+            Combined weights of distance & unbalanced class labels for BCE loss calculation, shape: [B, C, H, W], C = 1
+        """
+        return F.binary_cross_entropy_with_logits(y_pred, y_true, weight)

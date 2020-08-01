@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from torchvision.models import vgg19
 
 
 class Unet(nn.Module):
@@ -18,7 +17,7 @@ class Unet(nn.Module):
     ->: Concatenate
     """
     
-    def __init__(self, n_channels, dropout=0.1):
+    def __init__(self, n_channels, dropout=0.2):
         super(Unet, self).__init__()
         self.contract_net = Contraction(n_channels, dropout)
         self.double_conv_net = DoubleConv2d(512, 1024, dropout)
@@ -46,7 +45,7 @@ class Contraction(nn.Module):
              --\
     """
     
-    def __init__(self, in_channel, dropout=0.1):
+    def __init__(self, in_channel, dropout=0.2):
         super(Contraction, self).__init__()
         self.dconv_net1 = DoubleConv2d(in_channel, 64, dropout)
         self.dconv_net2 = DoubleConv2d(64, 128, dropout)
@@ -76,7 +75,7 @@ class Expansion(nn.Module):
     /--
     """
     
-    def __init__(self, dropout=0.1):
+    def __init__(self, dropout=0.2):
         super(Expansion, self).__init__()
         self.upsample1 = nn.ConvTranspose2d(1024, 512, kernel_size=2, stride=2)
         self.uconv_net1 = DoubleConv2d(1024, 512, dropout)
@@ -126,7 +125,7 @@ class Expansion(nn.Module):
 
 class DoubleConv2d(nn.Module):
     
-    def __init__(self, in_channel, out_channel, dropout=0.1):
+    def __init__(self, in_channel, out_channel, dropout=0.2):
         super(DoubleConv2d, self).__init__()
         conv_layers = [
             nn.Conv2d(in_channel, out_channel, kernel_size=3, padding=1, padding_mode='reflect'),
@@ -144,21 +143,3 @@ class DoubleConv2d(nn.Module):
     
     def forward(self, x):
         return self.conv_net(x)
-
-
-class VGG19(torch.nn.Module):
-    """VGG19 pretrained model for the implementation of  topo-awared loss function"""
-    # reference: https://discuss.pytorch.org/t/accessing-intermediate-layers-of-a-pretrained-network-forward/12113/2
-    def __init__(self):
-        super(VGG19, self).__init__()
-        self.features = vgg19(pretrained=True).features.eval()
-    
-    def forward(self, x, inter_layer_indices=[2, 7, 16], last_layer_idx=17):
-        assert max(inter_layer_indices) < last_layer_idx, 'Layer index out of bound!'
-        res = []
-        for i, layer in enumerate(self.features[:last_layer_idx]):
-            x = layer(x)
-            if i in inter_layer_indices:
-                res.append(x)
-        
-        return res
