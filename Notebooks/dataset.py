@@ -143,7 +143,7 @@ class DistmapDataLoader(data.Dataset):
         return weights
 
 
-def load_data(root_path, frame, mask, n_channel_frame=1, n_channel_mask=1, height=256, width=256, transform=True, return_dist=None):
+def load_data(root_path, frame, mask, n_channel_frame=1, n_channel_mask=1, height=256, width=256, enhance=False, contour=False, return_dist=None):
     """Load images from directory, preprocess & initialize dataloader object"""
     # Read file names
     frame_path = os.path.join(root_path, frame)
@@ -165,7 +165,8 @@ def load_data(root_path, frame, mask, n_channel_frame=1, n_channel_mask=1, heigh
                                                 os.path.join(mask_path, mask_name),
                                                 height,
                                                 width,
-                                                transform=transform)
+                                                enhance=enhance,
+                                                contour=contour)
     bar.finish()
     dataset = ImageDataLoader(mat_frame, mat_mask)
     
@@ -176,7 +177,7 @@ def load_data(root_path, frame, mask, n_channel_frame=1, n_channel_mask=1, heigh
         return dataset
 
 
-def read_images(name1, name2, h, w, transform=True):
+def read_images(name1, name2, h, w, enhance=False, contour=False):
     """Read and preprocess the images"""
     img_frame_raw = cv2.imread(name1, cv2.IMREAD_COLOR)
     img_frame_gray = cv2.cvtColor(img_frame_raw, cv2.COLOR_BGR2GRAY) # Convert raw image to grayscale
@@ -191,16 +192,17 @@ def read_images(name1, name2, h, w, transform=True):
     img_mask = img_mask.transpose((2, 0, 1))
     
     # Rescale the frame (raw image), thresholding the mask
-    if transform:
-        # raw image preprocessing
-        thresh = 0.1 if 'C2-' in name2 else 0.8
-        img_frame = top_hat(img_frame, scale=True)
-        #zero_indices = (img_frame < min(img_frame.mean(), 0.1)).squeeze()
-        #img_frame = equalize_hist(img_frame, zero_indices=zero_indices)
+    # raw image preprocessing
+    thresh = 0.1 if 'C2-' in name2 else 0.8
+    img_frame = top_hat(img_frame, scale=True)
+    if enhance:
+        zero_indices = (img_frame < min(img_frame.mean(), 0.1)).squeeze()
+        img_frame = equalize_hist(img_frame, zero_indices=zero_indices)
 
-        # mask preprocessing
-        img_mask = rescale(img_mask, threshold=0.5)  # Inverse masks with "1" as background & "0" as segmentation
-        img_mask = binarize(img_mask, thresh)
+    # mask preprocessing
+    img_mask = rescale(img_mask, threshold=0.75)  # Inverse masks with "1" as background & "0" as segmentation
+    img_mask = binarize(img_mask, thresh)
+    if contour:
         img_mask = find_boundaries(img_mask, mode='thick').astype(np.float)
             
     return img_frame, img_mask
