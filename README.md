@@ -12,47 +12,36 @@
 
 ## Training options
 ```
-usage: train.py [-h] [-i ROOT_PATH] [-b BATCH_SIZE] [-l LOSS] [-n N_EPOCHS]
-                [-r LR] [-p PATIENCE_COUNTER] [--early-stop] [--region-option]
-                [--enhance-img] [--contour-mask]
+usage: train.py [-h] -i ROOT_PATH [-b BATCH_SIZE] [-c CHANNEL] [-l LOSS]
+                [-n N_EPOCHS] [-r LR] [-p PATIENCE_COUNTER] [--augment]
+                [--early-stop] [--region-option]
 
 Unet training options
 
+required arguments:
+  -i ROOT_PATH         Root directory of input image datasets for training
+
 optional arguments:
-  -h, --help            show this help message and exit
-  -i ROOT_PATH, --root-path ROOT_PATH
-                        Root directory of input image datasets for training
-  -b BATCH_SIZE, --batch-size BATCH_SIZE
-                        Batch size (Default=8)
-  -l LOSS, --loss LOSS  
-                        Loss function option: (1). bce; (2). jaccard; (3).dice; (4).boundary (Default='bce')
-  -n N_EPOCHS, --n-epochs N_EPOCHS
-                        Total number of epoches for training (Default=150)
-  -r LR, --loss-rate LR
-                        Loss rate (Default=0.01)
-  -p PATIENCE_COUNTER, --patience PATIENCE_COUNTER
-                        Patience counter for early-stopping or lr-tuning (Default=30)
-  --early-stop          
-                        Whether to perform early-stopping; If False, lr is halved when reaching each patience
-  --region-option       
-                        Whether to use dice loss as the Region-based loss for boundary loss; If False, jaccard loss is used instead
-  --enhance-img         
-                        Whether to use Quantile transformation / Equalization normalization to enhance raw images
-  --contour-mask        
-                        Whether to take contours of ground-truth masks
+  -b BATCH_SIZE        Batch size
+  -c CHANNEL           Output channel size
+  -l LOSS              Loss function
+                         Options: (1). bce; (2). jaccard; (3).dice; (4).boundary
+  -n N_EPOCHS          Total number of epoches for training
+  -r LR                Learning rate
+  -p PATIENCE_COUNTER  Patience counter for early-stopping or lr-tuning
+  --augment            Whether to perform data augmentation in the current run
+  --early-stop         Whether to perform early-stopping; If False, lr is halved when reaching each patience
+  --region-option      Whether to use dice loss as the Region-based loss for boundary loss; If False, jaccard loss is used instead
 ```
 
 ## Sample run
 ```
 # Using Weighted BCE loss & early-stopping with patience=20
-./train.py -l bce -p 20 --early-stop  
+./train.py -i [data_path] -l bce -p 20 --early-stop  
 
 # Using Jaccard loss & decaying learning rate (lr /= 2 when patience >= patience_counter)
-./train.py -l jaccard
+./train.py -i [data_path] -l jaccard
 
-# Using Boundary loss with Jaccard loss; Enhancing image frames
-./train.py -l boundary --region-option --enhance-img
-
-# Using Boundary loss with Soft Dice loss; Enhance image frames & Contour image masks
-./train.py -l boundary --enhance-img --contour-mask
+# Using multi-label Weighted BCE with SAW map
+./train.py -i [data_path] -c 3 -p 20 
 ```
