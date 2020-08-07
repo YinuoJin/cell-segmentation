@@ -10,10 +10,9 @@ import argparse
 from argparse import RawTextHelpFormatter
 from progress.bar import ChargingBar
 from torch.utils import data
-from scipy.spatial.distance import directed_hausdorff
-from dataset import load_data, augmentation, calc_weight
+from dataset import load_data, augmentation
 from model import Unet
-from utils import IoULoss, SoftDiceLoss, SurfaceLoss, DistWeightBCELoss
+from utils import hausdorff, calc_accuracy_score, calc_f1_score, IoULoss, SoftDiceLoss, SurfaceLoss, ShapeBCELoss
 
 
 def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, device=None):
@@ -21,7 +20,7 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
     torch.set_grad_enabled(train)
     model.train() if train else model.eval()
     losses = []
-    accuracies = [] 
+    accuracies = []
 
     if train:
         bar = ChargingBar('Train', max=len(dataloader), suffix='%(percent)d%%')
@@ -32,7 +31,7 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
         for dp in dataloader:
             bar.next()
             x, y = dp
-            x, y = x.float(), y.float() # Type conversion (avoid bugs of DOUBLE <==> FLOAT)
+            x, y = x.float(), y.float()  # Type conversion
             x, y = x.to(device), y.to(device)
             output = model(x)
             loss = loss_fn(y, output)
@@ -43,23 +42,22 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
                 optimizer.step()
             losses.append(loss.detach().cpu().numpy())
 
-            # tmp: assign hausdorff distance as "accuracy"
-            hd_list = []
-            for r1, r2 in zip(y, output):
-                r1 = r1.detach().cpu().squeeze().numpy()
-                r2 = r2.detach().cpu().squeeze().numpy()
-                hd = max(directed_hausdorff(r1, r2)[0], directed_hausdorff(r2, r1)[0])
-                hd_list.append(hd)
+            # hausdorff distance as "accuracy"
+            # distance = hausdorff(y, output)
+            # accuracies.append(distance)
 
-            accuracies.append(np.mean(hd_list))
-            #accuracy = torch.mean(((output > 0.5) == (y > 0.5)).float())
-            #accuracies.append(accuracy.detach().cpu().numpy())
+            # binary classification accuracy
+            # accuracy = torch.mean(((output > 0.5) == (y > 0.5)).float())
+            # accuracies.append(accuracy.detach().cpu().numpy())
 
-    else:  # loss functions with distmap (bce, boundary)
+            # multi-label classification F1-score
+            accuracies.append(calc_f1_score(y, output))  # multi-label accuracy
+
+    else:  # loss functions with distmap (bce, boundary, saw)
         for dp, dist in zip(dataloader, distmap):
             bar.next()
             x, y = dp
-            x, y, dist = x.float(), y.float(), dist.float() # Type conversion (avoid bugs of DOUBLE <==> FLOAT)
+            x, y, dist = x.float(), y.float(), dist.float()  # Type conversion (avoid bugs of DOUBLE <==> FLOAT)
             x, y, dist = x.to(device), y.to(device), dist.to(device)
             output = model(x)
             loss = loss_fn(y, output, dist)
@@ -70,17 +68,17 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
                 optimizer.step()
             losses.append(loss.detach().cpu().numpy())
 
-            # tmp: assign hausdorff distance as "accuracy"
-            hd_list = []
-            for r1, r2 in zip(y, output):
-                r1 = r1.detach().cpu().squeeze().numpy()
-                r2 = r2.detach().cpu().squeeze().numpy()
-                hd = max(directed_hausdorff(r1, r2)[0], directed_hausdorff(r2, r1)[0])
-                hd_list.append(hd)
+            # hausdorff distance as "accuracy"
+            # distance = hausdorff(y, output)
+            # accuracies.append(distance)
 
-            accuracies.append(np.mean(hd_list))
-            #accuracy = torch.mean(((output > 0.5) == (y > 0.5)).float())
-            #accuracies.append(accuracy.detach().cpu().numpy())
+            # binary classification accuracy
+            # accuracy = torch.mean(((output > 0.5) == (y > 0.5)).float())
+            # accuracies.append(accuracy.detach().cpu().numpy())
+            
+            # multi-label classification F1-score
+            accuracies.append(calc_f1_score(y, output))  # multi-label accuracy
+            
     bar.finish()
     
     return np.mean(losses), np.mean(accuracies)
@@ -89,72 +87,82 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Unet training options',
             formatter_class=RawTextHelpFormatter)
-    parser.add_argument('-i', '--root-path', dest='root_path', type=str, default=None, action='store',
+    parser._action_groups.pop()
+    required = parser.add_argument_group('required arguments')
+    required.add_argument('-i', dest='root_path', type=str, required=True, action='store',
                         help='Root directory of input image datasets for training')
-    parser.add_argument('-b', '--batch-size', dest='batch_size', type=int, default=8, action='store',
+    
+    optional = parser.add_argument_group('optional arguments')
+    optional.add_argument('-b', dest='batch_size', type=int, default=8, action='store',
                         help='Batch size')
-    parser.add_argument('-l', '--loss', dest='loss', type=str, default='bce', action='store',
-                        help='Loss function option: (1). bce; (2). jaccard; (3).dice; (4).boundary')
-    parser.add_argument('-n', '--n-epochs', dest='n_epochs',  type=int, default=150, action='store',
+    optional.add_argument('-c', dest='channel', type=int, default=1, action='store',
+                        help='Output channel size')
+    optional.add_argument('-l', dest='loss', type=str, default='bce', action='store',
+                        help='Loss function\n  Options: (1). bce; (2). jaccard; (3).dice; (4).boundary'),
+    optional.add_argument('-n', dest='n_epochs',  type=int, default=150, action='store',
                         help='Total number of epoches for training')
-    parser.add_argument('-r', '--loss-rate', dest='lr', type=float, default=0.01, action='store',
-                        help='Loss rate')
-    parser.add_argument('-p', '--patience', dest='patience_counter', type=int, default=30, action='store',
+    optional.add_argument('-r', dest='lr', type=float, default=0.01, action='store',
+                        help='Learning rate')
+    optional.add_argument('-p', dest='patience_counter', type=int, default=30, action='store',
                         help='Patience counter for early-stopping or lr-tuning')
-    parser.add_argument('-a', '--augment', dest='augment', action='store_true',
+    optional.add_argument('--augment', dest='augment', action='store_true',
                         help='Whether to perform data augmentation in the current run')
-    parser.add_argument('--early-stop', dest='early_stop', action='store_true', 
+    optional.add_argument('--early-stop', dest='early_stop', action='store_true',
                         help='Whether to perform early-stopping; If False, lr is halved when reaching each patience')
-    parser.add_argument('--region-option', dest='region_option', action='store_true',
+    optional.add_argument('--region-option', dest='region_option', action='store_true',
                         help='Whether to use dice loss as the Region-based loss for boundary loss; If False, jaccard loss is used instead')
-    parser.add_argument('--enhance-img', dest='enhance_img', action='store_true',
-                        help='Whether to use Quantile transformation / Equalization normalization to enhance raw images')
-    parser.add_argument('--contour-mask', dest='contour', action='store_true',
-                        help='Whether to take contours of ground-truth masks')
 
     parser.set_defaults(feature=True)
     args = parser.parse_args()
 
-    # Parse arguments
-    root_path = '../datasets/multi_cell_custom_data_without_shapes/' if args.root_path is None else args.root_path
+    # Parameter initialization
+    root_path = args.root_path
     augment = args.augment
     n_epochs = args.n_epochs
     lr = args.lr
     batch_size = args.batch_size
+    n_output_channels = args.channel
     patience_counter = args.patience_counter
     early_stop = args.early_stop
     loss = args.loss
     region_option = args.region_option
-    enhance = args.enhance_img
-    contour = args.contour
-    dist = None  # distance map option for weighted BCE loss or boundary loss
-
+    dist = None  # weighted distmap indicator
+    
+    # data augmentation on training
+    if augment:
+        print('Performing data augmentation...')
+        augmentation(root_path, mode='train')
+        augmentation(root_path, mode='val')
+        augmentation(root_path, mode='test')
+        exit()
+        
     if loss == 'bce':
-        loss_fn = DistWeightBCELoss()
-        dist = 'weight'
+        dist = 'dist' if n_output_channels == 1 else 'saw'
+        loss_fn = ShapeBCELoss()
     elif loss == 'jaccard':
         loss_fn = IoULoss()
     elif loss == 'dice':
         loss_fn = SoftDiceLoss()
     elif loss == 'boundary':
-        alpha = 1.0  # alpha value for Boundary loss --> (a * Region-based loss + (1-a) * boundary loss)
+        alpha = 1.0  # a: (a * Region-based loss + (1-a) * boundary loss)
         dist = 'boundary'
+        loss_fn = SurfaceLoss(alpha=alpha, dice=region_option)
     else:
-        raise NotImplementedError('Loss function not recognized, available options: (1).bce; (2).jaccard; (3).dice; (4).boundary')
-
-    # data augmentation on training & validation sets
-    # augmented images are saved to file, no need to run the following code in every run
-    if augment:
-        print('Performing data augmentation...')
-        augmentation(root_path)
-        augmentation(root_path, mode='val')
+        raise NotImplementedError('Loss function {0} not recognized'.format(loss))
+    
+    sigma = None
+    if dist == 'saw': sigma = 4 if 'nuclei' in root_path else 1
     
     # load dataset
     print('Loading datasets...')
     print('- Training set:')
-    train_dataset, train_distmap = load_data(root_path, 'train_frames_aug', 'train_masks_aug', enhance=enhance, contour=contour, return_dist=dist)
+    train_dataset, train_distmap = load_data(root_path, 'train_frames_aug', 'train_masks_aug',
+                                             n_channel_mask=n_output_channels, sigma=sigma,
+                                             return_dist=dist)
     print('- Validation set:')
-    val_dataset, val_distmap = load_data(root_path, 'val_frames_aug', 'val_masks_aug', enhance=enhance, contour=contour, return_dist=dist)
+    val_dataset, val_distmap = load_data(root_path, 'val_frames_aug', 'val_masks_aug',
+                                         n_channel_mask=n_output_channels, sigma=sigma,
+                                         return_dist=dist)
     # print('- Test set':')
     # test_dataset = load_data(root_path, 'test_frames', 'test_masks')
     
@@ -167,7 +175,7 @@ if __name__ == '__main__':
  
     # Initialize network & training, transfer to GPU is available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    net = Unet(1)
+    net = Unet(1, n_output_channels)
     net.to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=lr, amsgrad=True)
 
@@ -180,7 +188,7 @@ if __name__ == '__main__':
     for epoch in range(n_epochs):
         t0 = time.perf_counter()
         if loss == 'boundary':
-            loss_fn = SurfaceLoss(alpha=alpha, dice=region_option)
+            loss_fn.alpha = alpha
             alpha -= 0.005 if alpha > 0.75 else alpha
         
         print('*------------------------------------------------------*')
@@ -201,8 +209,8 @@ if __name__ == '__main__':
         if patience_counter <= 0:
             if early_stop: # early stopping
                 break
-            else: # halved lr every time patience limit is reached
-                patience_counter = 30
+            else:  # halved lr every time patience limit is reached
+                patience_counter = args.patience_counter
                 lr /= 2
                 optimizer = torch.optim.Adam(net.parameters(), lr=lr, amsgrad=True)
         

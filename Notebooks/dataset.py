@@ -7,13 +7,16 @@ import gc
 
 from progress.bar import ChargingBar
 from torch.utils import data
+from scipy.stats import mode
+from scipy import ndimage as ndi
+from scipy.ndimage.morphology import distance_transform_edt
+from skimage.exposure import adjust_gamma, is_low_contrast, match_histograms, rescale_intensity
+from skimage.morphology import black_tophat, convex_hull_image, skeletonize, square, disk, dilation, reconstruction
+from skimage.filters import threshold_mean
 from skimage.transform import resize
 from skimage.segmentation import find_boundaries
-from sklearn.preprocessing import quantile_transform
-from skimage.color import rgb2gray
-from scipy.stats import mode
-from scipy.ndimage.morphology import distance_transform_edt
 
+from utils import get_contour
 
 class ImageDataLoader(data.Dataset):
     """Load raw images and masks"""
@@ -38,14 +41,16 @@ class ImageDataLoader(data.Dataset):
 
 
 class DistmapDataLoader(data.Dataset):
-    """Load distance maps of masks"""
+    """Precompute distance maps of masks prior to network training"""
     
-    def __init__(self, mat_mask, dist_option):
+    def __init__(self, masks, sigma, dist_option):
         super(DistmapDataLoader, self).__init__()
         if dist_option == 'boundary':
-            self.distmap = self.contour_distmap(mat_mask)
+            self.distmap = self.contour_distmap(masks)
+        elif dist_option == 'saw':
+            self.distmap = self.saw_distmap(masks, sigma)
         else:
-            self.distmap = self.weight_distmap(mat_mask)
+            self.distmap = self.weight_distmap(masks, sigma=sigma)
 
     def __len__(self):
         return self.distmap.shape[0]
@@ -55,9 +60,23 @@ class DistmapDataLoader(data.Dataset):
 
     @staticmethod
     def contour_distmap(masks):
-        """Retrieve distance map of each pixel to its closest contour in every image"""
+        """
+        Calculate distance map of each pixel to its closest contour in every image
+        
+        Parameters
+        ----------
+        masks: array-like
+            A 4D array of shape (n_images, channel=1, image_height, image_width),
+            where each slice of the matrix along the 0th axis represents one binary mask.
+            
+        Returns
+        -------
+        array-like
+            A 4D array of shape (n_images, channel=1, image_height, image_width)
+        """
+        # todo: generalize to multi-class classification
         distmap = np.zeros_like(masks)
-        print('Calculating distance maps...')
+        print('Calculating contour distance maps...')
         bar = ChargingBar('Loading', max=len(masks), suffix='%(percent)d%%')
         for i, mask in enumerate(masks):
             bar.next()
@@ -69,7 +88,7 @@ class DistmapDataLoader(data.Dataset):
         return distmap
     
     @staticmethod
-    def weight_distmap(masks_list, w0=10, sigma=5):
+    def weight_distmap(masks, w0=10, sigma=5):
         """
         Generate the weight maps as specified in the UNet paper
         for a set of binary masks.
@@ -77,73 +96,120 @@ class DistmapDataLoader(data.Dataset):
         Parameters
         ----------
         masks_list: array-like
-            A 4D array of shape (list, channel=1, image_height, image_width),
+            A 4D array of shape (n_images, channel=1, image_height, image_width),
             where each slice of the matrix along the 0th axis represents one binary mask.
 
         Returns
         -------
         array-like
-            A 2D array of shape (image_height, image_width)
-    
+            A 4D array of shape (n_images, channel=1, image_height, image_width)
         """ 
         # Reference from: https://jaidevd.github.io/posts/weighted-loss-functions-for-instance-segmentation/
         
-        weights = np.zeros_like(masks_list)
-        print('Calculating distance map...')
-        bar = ChargingBar('Loading', max=len(masks_list), suffix='%(percent)d%%')
-        for idx, masks in enumerate(masks_list):
+        weights = np.zeros_like(masks)
+        print('Calculating Weighted distance map...')
+        bar = ChargingBar('Loading', max=len(masks), suffix='%(percent)d%%')
+        for idx, mask in enumerate(masks):
             bar.next()
-            nrows, ncols = masks.shape[1:]
-            masks = (masks > 0).astype(int)
-            distMap = np.zeros((nrows * ncols, masks.shape[0]))
-            X1, Y1 = np.meshgrid(np.arange(nrows), np.arange(ncols))
-            X1, Y1 = np.c_[X1.ravel(), Y1.ravel()].T
-        
-            for i, mask in enumerate(masks):
-                # find the boundary of each mask,
-                # compute the distance of each pixel from this boundary
-                bounds = find_boundaries(mask, mode='inner')
-                X2, Y2 = np.nonzero(bounds)
-                xSum = (X2.reshape(-1, 1) - X1.reshape(1, -1)) ** 2
-                ySum = (Y2.reshape(-1, 1) - Y1.reshape(1, -1)) ** 2
-                distMap[:, i] = np.sqrt(xSum + ySum).min(axis=0)
-
-            ix = np.arange(distMap.shape[0])
-            if distMap.shape[1] == 1:
-                d1 = distMap.ravel()
-                border_loss_map = w0 * np.exp((-1 * (d1) ** 2) / (2 * (sigma ** 2)))
-            else:
-                if distMap.shape[1] == 2:
-                    d1_ix, d2_ix = np.argpartition(distMap, 1, axis=1)[:, :2].T
-                else:
-                    d1_ix, d2_ix = np.argpartition(distMap, 2, axis=1)[:, :2].T
-                d1 = distMap[ix, d1_ix]
-                d2 = distMap[ix, d2_ix]
-                border_loss_map = w0 * np.exp((-1 * (d1 + d2) ** 2) / (2 * (sigma ** 2)))
-            
-            xBLoss = np.zeros((nrows, ncols))
-            xBLoss[X1, Y1] = border_loss_map
-            
-            # class weight map
-            loss = np.zeros((nrows, ncols))
-            w_1 = 1 - masks.sum() / loss.size
+            mask = mask.squeeze()
+            nrows, ncols = mask.shape
+            dist_to_border = distance_transform_edt(1.0 - mask)
+            border_loss = w0 * np.exp((-1 * dist_to_border ** 2) / (2 * (sigma ** 2)))
+            class_loss = np.zeros((nrows, ncols))
+            w_1 = 1 - mask.sum() / class_loss.size
             w_0 = 1 - w_1
-            loss[masks.sum(0) == 1] = w_1
-            loss[masks.sum(0) == 0] = w_0
+            class_loss[mask.sum(0) == 1] = w_1
+            class_loss[mask.sum(0) == 0] = w_0
         
-            ZZ = xBLoss + loss
-            weights[idx] = np.expand_dims(ZZ, axis=0)
-            
-            # cleanup variables, free memory space
-            del distMap, X1, Y1, X2, Y2, xSum, ySum, d1, bounds, border_loss_map, xBLoss, loss, ZZ
-            gc.collect()
+            loss = class_loss + border_loss
+            weights[idx] = np.expand_dims(loss, axis=0)
 
         bar.finish()
 
         return weights
-
-
-def load_data(root_path, frame, mask, n_channel_frame=1, n_channel_mask=1, height=256, width=256, enhance=False, contour=False, return_dist=None):
+    
+    @staticmethod
+    def saw_distmap(masks, sigma):
+        """
+        Shape-awared weighted distance map, highlighting adjacent cell borders, concave cells & smaller cells
+        
+        Parameters
+        ----------
+        masks : array-like
+            A 4D array of shape (n_images, channel=3, image_height, image_width),
+            where each slice of the matrix along the 0th axis represents one binary mask.
+        sigma : int
+            Standard deviation value for weight-map gaussian filtering
+            
+        Returns
+        -------
+        array-like
+            A 4D array of shape (n_images, channel=1, image_height, image_width)
+        """
+        def _calc_weight_class(g, smooth=1e-10):
+            """Calculate weights compensating for imbalance class labels"""
+            weight_class = np.zeros((g.shape[1], g.shape[2]))
+            w = np.array([1 / (np.sum(g[0]) + smooth), 1 / (np.sum(g[1]) + smooth), 1 / (np.sum(g[2]) + smooth)])
+            w_norm = w / w.sum()
+            for i in range(3):
+                weight_class[g[i] == 1] = w_norm[i]
+        
+            return weight_class
+        
+        def _create_concave_complement(g):
+            """create concave complement masks w.r.t. original masks"""
+            # Generate n 2D arrays, separating individual masks from each other
+            # Generate concave complement w.r.t. to each original mask, stack concaves into single 2D array
+            contours = get_contour(g)
+            g_concave_comp = np.zeros((g.shape[0], g.shape[1]))
+            for i in range(len(contours)):
+                g_indep_mask = np.zeros_like(g_concave_comp)
+                contour = contours[i].squeeze(axis=1).astype(np.int32)
+                cv2.fillPoly(g_indep_mask, pts=[contour], color=(255, 255, 255))
+                g_indep_mask /= 255.0
+                g_convex = convex_hull_image(g_indep_mask)
+                g_concave_comp[g_convex - g_indep_mask > 0] = 1.0
+        
+            return g_concave_comp
+    
+        assert masks.ndim == 4 and masks.shape[1] == 3, "Invalid masks shape {0}".format(masks.shape)
+        print('Calculating shape-awared weight map...')
+        
+        if sigma is None:
+            sigma = 4
+        bar = ChargingBar('Loading', max=len(masks), suffix='%(percent)d%%')
+        weights = np.zeros((masks.shape[0], 1, masks.shape[2], masks.shape[3]))
+        for i, g in enumerate(masks):
+            bar.next()
+            g_binary = np.zeros((g.shape[1], g.shape[2]))
+            g_binary[g[1] == 1.0] = 1.0
+            g_concave = _create_concave_complement(g_binary)
+            skeleton_union = np.bitwise_or(skeletonize(g_binary), skeletonize(g_concave)).astype(np.float)
+            contour_union = np.bitwise_or(find_boundaries(g_binary), find_boundaries(g_concave)).astype(np.float)
+    
+            phi_k = distance_transform_edt(1 - skeleton_union)  # distance to closest skeleton foreground neighbor
+            tau = np.max(contour_union * phi_k)  # distance norm factor
+    
+            # Sum imbalance class weight & shape-awared weight: (W_saw = W_class + W_shape)
+            weight = _calc_weight_class(g) + ndi.gaussian_filter(contour_union * (1 - phi_k / tau), sigma=sigma)
+            weight_scaled = weight * 10
+            weights[i] = np.expand_dims(weight_scaled, axis=0)
+            
+        bar.finish()
+            
+        return weights
+        
+        
+def load_data(root_path,
+              frame, mask,
+              n_channel_frame=1,
+              n_channel_mask=3,
+              height=256,
+              width=256,
+              sigma=None,
+              limit=None,
+              dilate=False,
+              return_dist=None):
     """Load images from directory, preprocess & initialize dataloader object"""
     # Read file names
     frame_path = os.path.join(root_path, frame)
@@ -152,72 +218,192 @@ def load_data(root_path, frame, mask, n_channel_frame=1, n_channel_mask=1, heigh
     mask_names = sorted(os.listdir(mask_path))
     
     assert os.path.exists(frame_path) and os.path.exists(mask_path), "Image directory doesn't exist!!"
-    assert return_dist is None or return_dist == 'boundary' or return_dist == 'weight', "Unrecognized return_dist option"
-
+    assert return_dist is None or \
+           return_dist == 'boundary' or \
+           return_dist == 'dist' or \
+           return_dist == 'saw', "Unrecognized return_dist option {0}".format(return_dist)
+    
     # Read raw images of frames & masks, store them in np.ndarray
+    bar = ChargingBar('Loading', max=len(frame_names), suffix='%(percent)d%%')
     mat_frame = np.zeros((len(frame_names), n_channel_frame, height, width))
     mat_mask = np.zeros((len(mask_names), n_channel_mask, height, width))
-    
-    bar = ChargingBar('Loading', max=len(frame_names), suffix='%(percent)d%%')
-    for i, (frame_name, mask_name) in enumerate(zip(frame_names, mask_names)):
+    for i in range(len(frame_names)):
+        frame_name, mask_name = frame_names[i], mask_names[i]
         bar.next()
         mat_frame[i], mat_mask[i] = read_images(os.path.join(frame_path, frame_name),
                                                 os.path.join(mask_path, mask_name),
                                                 height,
                                                 width,
-                                                enhance=enhance,
-                                                contour=contour)
+                                                limit,
+                                                n_channel_mask == 1,
+                                                dilate)
+        
     bar.finish()
     dataset = ImageDataLoader(mat_frame, mat_mask)
-    distset = None if return_dist is None else DistmapDataLoader(mat_mask, return_dist)
-
+    distset = None if return_dist is None else DistmapDataLoader(mat_mask, sigma, return_dist)
+    
     return dataset, distset
 
-def read_images(name1, name2, h, w, enhance=False, contour=False):
+
+def read_images(name1, name2, h, w, limit=None, binary_mask=False, dilate=False):
     """Read and preprocess the images"""
     img_frame_raw = cv2.imread(name1, cv2.IMREAD_COLOR)
-    img_frame_gray = cv2.cvtColor(img_frame_raw, cv2.COLOR_BGR2GRAY) # Convert raw image to grayscale
+    img_frame_gray = cv2.cvtColor(img_frame_raw, cv2.COLOR_BGR2GRAY)  # Convert raw image to grayscale
     img_mask_raw = cv2.imread(name2, cv2.IMREAD_COLOR)
     
-    # Reshape
-    img_frame = resize(img_frame_gray, (h, w, 1))
-    img_mask = resize(img_mask_raw, (h, w, 1))
+    # Raw image preprocessing
+    if limit is None:
+        limit = 1.0 if 'svg' in name1 else 5.0
+    img_frame = resize(img_frame_gray, (h, w))
+    img_frame = img_preprocessing(img_frame, limit=limit, dilate=dilate)
     
-    # Axes permutation: (H, W, C) -> (C, H, W), facilitates to PyTorch nn order
-    img_frame = img_frame.transpose((2, 0, 1))
-    img_mask = img_mask.transpose((2, 0, 1))
+    # Mask preprocessing, thresholding & label augmentation
+    img_mask = resize(img_mask_raw, (h, w, 3)) if 'svg' in name2 else resize(img_mask_raw, (h, w, 1))
+    img_mask = mask_preprocessing(img_mask, binary_mask)
     
-    # Rescale the frame (raw image), thresholding the mask
-    # raw image preprocessing
-    thresh = 0.1 if 'C2-' in name2 else 0.8
-    img_frame = top_hat(img_frame, scale=True)
-    if enhance:
-        zero_indices = (img_frame < min(img_frame.mean(), 0.1)).squeeze()
-        img_frame = equalize_hist(img_frame, zero_indices=zero_indices)
-
-    # mask preprocessing
-    img_mask = rescale(img_mask, threshold=0.75)  # Inverse masks with "1" as background & "0" as segmentation
-    img_mask = binarize(img_mask, thresh)
-    if contour:
-        img_mask = find_boundaries(img_mask, mode='thick').astype(np.float)
-            
+    # Check dimensions
+    if binary_mask:
+        assert img_frame.shape == (1, h, w) and img_mask.shape == (1, h, w), 'Invalid image shape!'
+    else:
+        assert img_frame.shape == (1, h, w) and img_mask.shape == (3, h, w), 'Invalid image shape!'
+        
     return img_frame, img_mask
 
 
+def img_preprocessing(img, limit=1.0, grid_size=(16, 16), dilate=True):
+    """
+    Preprocessing raw images, remove background noises & smooth regional inhomogeneoous intensity
+    
+    steps:
+        (1). (optional) Gamma adjustment
+        (2). (optional) Background correction
+        (3). Adaptive Histogram Equalization (AHE)
+        (4). Rescale intensity to [0,1]
+    
+    Parameters
+    ----------
+    img : np.ndarray
+        Raw image shape=[H, W]
+    limit : np.float
+        contrast limit value for AHE
+    grid_size : tuple of int
+        sliding-window size for AHE
+    dilate : bool
+        Whether to perform background correction via g - dilate(g)
+    """
+    # Gamma adjustment
+    img = adjust_gamma(img, 0.5) if is_low_contrast(img) else img
+    
+    # Background correction with morphologial operations (g - dilation(g))
+    if dilate:
+        seed = img.copy()
+        seed[1:-1, 1:-1] = img.min()
+        dilated = reconstruction(seed, img, method='dilation')
+        img = img - dilated
+        
+    # AHE
+    img = np.round(img * 255.0).astype(np.uint8)
+    clahe = cv2.createCLAHE(clipLimit=limit, tileGridSize=grid_size)
+    img = clahe.apply(img) / 255.0
+    img = rescale_intensity(img, out_range=(0, 1))  # Rescale intensity
+    
+    return np.expand_dims(img, axis=0)
+
+
+def mask_preprocessing(img, binary_mask=False):
+    """
+    Preprocessing masks: Rescaling, Binarization, Class augmentation
+
+    Output channels representing 3 classes:
+        (1). background
+        (2). cell region (cytoplasm + nuclei)
+        (3). attached border of clotting cells
+
+    Parameters
+    ----------
+    img : np.ndarray
+        Ground truth masks: shape=[H, W, 3] (if from from annotated fluroscence datasets) or [H, W, 1]
+    binary_mask : bool
+        Whether return binarized mask or one-hot encoded (3-channel) mask (default=False)
+
+    Returns
+    -------
+    img_one_hot : np.ndarray
+        one-hot encoded ground truth mask, shape=[3, H, W]
+    """
+    
+    def _label_augment(g):
+        """Augment the 3rd class: attaching cell borders """
+        se = square(3)
+        g_tophat = black_tophat(g, se)
+        g_dilation = dilation(g_tophat, se)
+        g_aug = g + (np.max(g) + 1) * g_dilation
+        g_aug[g_aug == 3.0] = 2.0
+        
+        # debug: try highlighting all borders as the 3rd label
+        g_aug[find_boundaries(g)] = 2.0
+        
+        return g_aug
+    
+    def _fill_boundary_mask(g):
+        """Create filled-in masks for original boundary masks"""
+        g = _binarize(rescale(g))
+        g = dilation(g, disk(1))  # enhance cell borders
+        g_tmp_filled = ndi.binary_fill_holes(g)
+        is_boundary = np.bitwise_and(g_tmp_filled == 1.0, g == 1.0)
+        
+        g_filled = np.zeros_like(g)
+        g_filled[g_tmp_filled == 1.0] = 1.0
+        g_filled[is_boundary] = 2.0
+        # dist_to_background = ndi.distance_transform_edt(g_tmp_filled)
+        # g_filled[dist_to_background <= 2.0] = 0.0
+        
+        return g_filled
+    
+    def _binarize_multi_channel(g_orig):
+        g = np.zeros_like(g_orig[0])
+        g[g_orig[1] > 0.0] = 1.0
+        g[g_orig[2] > 0.0] = 1.0
+        g[g_orig[0] > 0.0] = 0.0
+        
+        return g
+    
+    def _binarize(g_orig):
+        thresh = threshold_mean(g_orig)
+        g = (g_orig > thresh).astype(np.float)
+        
+        return g
+    
+    def _one_hot_encoding(g):
+        h, w = g.shape
+        g_one_hot = np.zeros((3, h, w))
+        for i in range(3):
+            g_one_hot[i, :, :] = (g == i).astype(np.float)
+        
+        return g_one_hot
+    
+    if binary_mask:
+        img_out = _binarize(rescale(img))
+        img_out = np.expand_dims(dilation(img_out.squeeze(), disk(1)), axis=0)
+    else:
+        if img.mean() > 0.5:
+            img_processed = _fill_boundary_mask(img.squeeze())
+        else:
+            img_binary_raw = _binarize(img.squeeze()) if img.shape[2] == 1 else _binarize_multi_channel(
+                img.transpose((2, 0, 1)))
+            img_processed = _label_augment(img_binary_raw)
+        img_out = _one_hot_encoding(img_processed)
+    
+    return img_out
+    
+    
 def rescale(img, threshold=0.5):
-    """Rescale masks, reverse the image if "white" is the background"""
+    """Rescale masks, reverse the image if background value exceeds the threshold"""
     if mode(img, axis=None)[0] > threshold:
         img = img.max() - img
     img_scaled = (img - img.min()) / (img.max() - img.min())  # Min-max scale
     
     return img_scaled
-
-
-def binarize(img, threshold=0.5):
-    """Binarize ground-truth masks"""
-    _, img = cv2.threshold(img, threshold, 1.0, cv2.THRESH_BINARY)
-    
-    return img
 
 
 def top_hat(img, kernel_size=256, scale=True):
@@ -228,77 +414,6 @@ def top_hat(img, kernel_size=256, scale=True):
         img_tophat = (img_tophat - img_tophat.min()) / (img_tophat.max() - img_tophat.min())  # Min-max scale
 
     return img_tophat if img_tophat.ndim == 3 else np.expand_dims(img_tophat, axis=0)
-
-
-def equalize_hist(img, zero_indices=None):
-    """histogram equalization, assume input image has shape [C, H, W]"""
-    # reference: # https://docs.opencv.org/master/d5/daf/tutorial_py_histogram_equalization.html
-    c = np.round(img[0] * 255.0).astype(np.uint8)
-    out = cv2.equalizeHist(c)
-    img_enhanced = out / 255.0 
-    
-    if zero_indices is not None:
-        img_enhanced[zero_indices] = 0.0
-    
-    return np.expand_dims(img_enhanced, axis=0)
-
-
-def qt(img, zero_indices=None):
-    """Quantile transformation to each channnel separately"""
-    n_samples = np.min([img.shape[1], 1000])  # set n_quantiles to n_samples if n_samples < 1000
-    
-    img_transformed = np.zeros_like(img)
-    for i in range(img.shape[0]):
-        img_transformed[i] = quantile_transform(img[i], n_quantiles=n_samples)
-        if zero_indices is not None:
-            img_transformed[i][zero_indices] = 0.0
-    
-    return img
-
-
-def calc_weight(mat, threshold=0.0, epsilon=1e-20):
-    """Calculate weight for BCE with imbalanced labels"""
-    return (mat <= threshold).sum() / ((mat > threshold).sum() + epsilon)
-
-
-def border_transform(img):
-    """Retrieve only boundaries of image masks"""
-    img = img.squeeze()
-    H, W = img.shape
-    out = img.copy()
-    
-    # Corner
-    if img[0, 0] == img[0, 1] == img[1, 0] == img[1, 1] == 1:
-        out[0, 0] = 0
-    if img[0, W - 2] == img[0, W - 1] == img[1, W - 2] == img[1, W - 1] == 1:
-        out[0, W - 1] = 0
-    if img[H - 2, 0] == img[H - 2, 1] == img[H - 1, 0] == img[H - 1, 1] == 1:
-        out[H - 1, 0] = 0
-    if img[H - 2, W - 2] == img[H - 2, W - 1] == img[H - 1, W - 2] == img[H - 1, W - 1] == 1:
-        out[H - 1, W - 1] = 0
-    
-    # Side
-    for i in range(1, H - 1):
-        if img[i - 1, 0] == img[i - 1, 1] == img[i, 0] == img[i, 1] == img[i + 1, 0] == img[i + 1, 1] == 1:
-            out[i, 0] = 0
-        if img[i - 1, W - 2] == img[i - 1, W - 1] == img[i, W - 2] == img[i, W - 1] == img[i + 1][W - 2] == img[i + 1, W - 1] == 1:
-            out[i, W - 1] = 0
-    
-    for j in range(1, W - 1):
-        if img[0, j - 1] == img[0, j] == img[0, j + 1] == img[1, j - 1] == img[1, j] == img[1, j + 1] == 1:
-            out[0, j] = 0
-        if img[H - 2, j - 1] == img[H - 2, j] == img[H - 2, j + 1] == img[H - 1, j - 1] == img[H - 1, j] == img[H - 1, j + 1] == 1:
-            out[H - 1, j] = 0
-    
-    # Inner regions
-    for i in range(1, H - 1):
-        for j in range(1, W - 1):
-            if img[i - 1, j - 1] == img[i - 1, j] == img[i - 1, j + 1] == \
-               img[i, j - 1] == img[i, j] == img[i, j + 1] == \
-               img[i + 1, j - 1] == img[i + 1, j] == img[i + 1, j + 1] == 1:
-                out[i, j] = 0
-    
-    return np.expand_dims(out, axis=0)
 
 
 def augmentation(root_path, mode='train'):
@@ -359,4 +474,3 @@ def augmentation(root_path, mode='train'):
     
     for n1, n2 in zip(aug_frame_names, aug_mask_names):
         assert n1 == n2, "Frame {0} and Mask {1} have inconsistent names".format(n1, n2)
-

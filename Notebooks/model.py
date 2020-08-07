@@ -17,14 +17,14 @@ class Unet(nn.Module):
     ->: Concatenate
     """
     
-    def __init__(self, n_channels, dropout=0.2):
+    def __init__(self, input_channels=1, output_channels=1, dropout=0.2):
         super(Unet, self).__init__()
-        self.contract_net = Contraction(n_channels, dropout)
+        self.contract_net = Contraction(input_channels, dropout)
         self.double_conv_net = DoubleConv2d(512, 1024, dropout)
         self.expand_net = Expansion(dropout)
         self.out_net = nn.Sequential(
-            nn.Conv2d(64, 1, kernel_size=1),
-            nn.Sigmoid()
+            nn.Conv2d(64, output_channels, kernel_size=1),
+            nn.Sigmoid() if output_channels == 1 else nn.Softmax(dim=1)
         )
     
     def forward(self, x):
