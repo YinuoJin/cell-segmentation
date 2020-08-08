@@ -22,26 +22,23 @@ required arguments:
   -i ROOT_PATH         Root directory of input image datasets for training
 
 optional arguments:
-  -b BATCH_SIZE        Batch size
-  -c CHANNEL           Output channel size
-  -l LOSS              Loss function
+  -b BATCH_SIZE        Batch size  [default: 8]
+  -c CHANNEL           Output channel size  [default: 3]
+  -l LOSS              Loss function  [default: bce]
                          Options: (1). bce; (2). jaccard; (3).dice; (4).boundary
-  -n N_EPOCHS          Total number of epoches for training
-  -r LR                Learning rate
-  -p PATIENCE_COUNTER  Patience counter for early-stopping or lr-tuning
-  --augment            Whether to perform data augmentation in the current run
+  -n N_EPOCHS          Total number of epoches for training  [default: 150]
+  -r LR                Learning rate  [default: 0.01]
+  -p PATIENCE_COUNTER  Patience counter for early-stopping or lr-tuning  [default: 30]
+  --augment            Whether to perform data augmentation in the current run [Usually no need to run]
   --early-stop         Whether to perform early-stopping; If False, lr is halved when reaching each patience
   --region-option      Whether to use dice loss as the Region-based loss for boundary loss; If False, jaccard loss is used instead
 ```
 
 ## Sample run
 ```
-# Using Weighted BCE loss & early-stopping with patience=20
-./train.py -i [data_path] -l bce -p 20 --early-stop  
+# Training "nuclei" dataset using 3-class model, weighted BCE loss & early-stopping with patience=20
+./train.py -i ../datasets/multi_cell_nuclei/ -l bce -p 20 --early-stop
 
-# Using Jaccard loss & decaying learning rate (lr /= 2 when patience >= patience_counter)
-./train.py -i [data_path] -l jaccard
-
-# Using multi-label Weighted BCE with SAW map
-./train.py -i [data_path] -c 3 -p 20 
+# Training "membrane" dataset using binary model, Jaccard loss & decaying learning rate (lr /= 2 when patience >= patience_counter)
+./train.py -i ../datasets/multi_cell_membrane/  -c 1 -l jaccard
 ```
