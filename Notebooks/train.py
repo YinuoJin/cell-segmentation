@@ -93,9 +93,9 @@ if __name__ == '__main__':
                         help='Root directory of input image datasets for training')
     
     optional = parser.add_argument_group('optional arguments')
-    optional.add_argument('-b', dest='batch_size', type=int, default=8, action='store',
+    optional.add_argument('-b', dest='batch_size', type=int, default=4, action='store',
                         help='Batch size')
-    optional.add_argument('-c', dest='channel', type=int, default=1, action='store',
+    optional.add_argument('-c', dest='channel', type=int, default=3, action='store',
                         help='Output channel size')
     optional.add_argument('-l', dest='loss', type=str, default='bce', action='store',
                         help='Loss function\n  Options: (1). bce; (2). jaccard; (3).dice; (4).boundary'),
@@ -151,16 +151,16 @@ if __name__ == '__main__':
         raise NotImplementedError('Loss function {0} not recognized'.format(loss))
     
     sigma = None
-    if dist == 'saw': sigma = 4 if 'nuclei' in root_path else 1
+    if dist == 'saw': sigma = 3 if 'nuclei' in root_path else 1
     
     # load dataset
     print('Loading datasets...')
     print('- Training set:')
-    train_dataset, train_distmap = load_data(root_path, 'train_frames_aug', 'train_masks_aug',
+    train_dataset, train_distmap = load_data(root_path, 'train_frames', 'train_masks',
                                              n_channel_mask=n_output_channels, sigma=sigma,
                                              return_dist=dist)
     print('- Validation set:')
-    val_dataset, val_distmap = load_data(root_path, 'val_frames_aug', 'val_masks_aug',
+    val_dataset, val_distmap = load_data(root_path, 'val_frames', 'val_masks',
                                          n_channel_mask=n_output_channels, sigma=sigma,
                                          return_dist=dist)
     # print('- Test set':')
