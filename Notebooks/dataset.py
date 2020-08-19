@@ -51,7 +51,7 @@ class DistmapDataLoader(data.Dataset):
         elif dist_option == 'saw':
             self.distmap = self.saw_distmap(masks, sigma)
         else:
-            self.distmap = self.weight_distmap(masks, sigma=sigma)
+            self.distmap = self.weight_distmap(masks)
 
     def __len__(self):
         return self.distmap.shape[0]
@@ -106,7 +106,6 @@ class DistmapDataLoader(data.Dataset):
             A 4D array of shape (n_images, channel=1, image_height, image_width)
         """ 
         # Reference from: https://jaidevd.github.io/posts/weighted-loss-functions-for-instance-segmentation/
-        
         weights = np.zeros_like(masks)
         print('Calculating Weighted distance map...')
         bar = ChargingBar('Loading', max=len(masks), suffix='%(percent)d%%')

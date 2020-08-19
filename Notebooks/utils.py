@@ -78,11 +78,11 @@ def calc_f1_score(y_true, y_pred):
         if r1.shape[0] > 1:
             r1_label, r2_label = np.argmax(r1, axis=0), np.argmax(r2, axis=0)
         else:
-            r1_label = np.zeros((1, r1.shape[1], r1.shaoe[2]))
-            r2_label = np.zeros_like(r1_label)
-            r1_label[r1 < 0.5] = 1
+            r1_label = np.zeros((2, r1.shape[1], r1.shape[2]))
+            r2_label = np.zeros_like(r1_label) 
+            r1_label[0, r1.squeeze() < 0.5] = 1
             r1_label[1, r1_label[0] == 0] = 1
-            r2_label[r2 < 0.5] = 1
+            r2_label[0, r2.squeeze() < 0.5] = 1
             r2_label[1, r2_label[0] == 0] = 1
         accuracies.append(f1_score(r1_label.flatten(), r2_label.flatten(), average='weighted'))
         
