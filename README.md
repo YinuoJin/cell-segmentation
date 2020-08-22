@@ -22,7 +22,7 @@ required arguments:
   -i ROOT_PATH         Root directory of input image datasets for training
 
 optional arguments:
-  -b BATCH_SIZE        Batch size  [default: 8]
+  -b BATCH_SIZE        Batch size  [default: 4]
   -c CHANNEL           Output channel size  [default: 3]
   -l LOSS              Loss function  [default: bce]
                          Options: (1). bce; (2). jaccard; (3).dice; (4).boundary

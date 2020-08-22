@@ -18,6 +18,7 @@ from skimage.segmentation import find_boundaries
 
 from utils import get_contour
 
+
 class ImageDataLoader(data.Dataset):
     """Load raw images and masks"""
     
@@ -50,7 +51,7 @@ class DistmapDataLoader(data.Dataset):
         elif dist_option == 'saw':
             self.distmap = self.saw_distmap(masks, sigma)
         else:
-            self.distmap = self.weight_distmap(masks, sigma=sigma)
+            self.distmap = self.weight_distmap(masks)
 
     def __len__(self):
         return self.distmap.shape[0]
@@ -105,7 +106,6 @@ class DistmapDataLoader(data.Dataset):
             A 4D array of shape (n_images, channel=1, image_height, image_width)
         """ 
         # Reference from: https://jaidevd.github.io/posts/weighted-loss-functions-for-instance-segmentation/
-        
         weights = np.zeros_like(masks)
         print('Calculating Weighted distance map...')
         bar = ChargingBar('Loading', max=len(masks), suffix='%(percent)d%%')
@@ -208,6 +208,7 @@ def load_data(root_path,
               width=256,
               sigma=None,
               limit=None,
+              enhance=False,
               dilate=False,
               return_dist=None):
     """Load images from directory, preprocess & initialize dataloader object"""
@@ -236,7 +237,8 @@ def load_data(root_path,
                                                 width,
                                                 limit,
                                                 n_channel_mask == 1,
-                                                dilate)
+                                                dilate,
+                                                enhance)
         
     bar.finish()
     dataset = ImageDataLoader(mat_frame, mat_mask)
@@ -245,7 +247,7 @@ def load_data(root_path,
     return dataset, distset
 
 
-def read_images(name1, name2, h, w, limit=None, binary_mask=False, dilate=False):
+def read_images(name1, name2, h, w, limit=None, binary_mask=False, dilate=False, enhance=False):
     """Read and preprocess the images"""
     img_frame_raw = cv2.imread(name1, cv2.IMREAD_COLOR)
     img_frame_gray = cv2.cvtColor(img_frame_raw, cv2.COLOR_BGR2GRAY)  # Convert raw image to grayscale
@@ -255,10 +257,10 @@ def read_images(name1, name2, h, w, limit=None, binary_mask=False, dilate=False)
     if limit is None:
         limit = 1.0 if 'svg' in name1 else 5.0
     img_frame = resize(img_frame_gray, (h, w))
-    img_frame = img_preprocessing(img_frame, limit=limit, dilate=dilate)
+    img_frame = img_preprocessing(img_frame, limit=limit, dilate=dilate, enhance=enhance)
     
     # Mask preprocessing, thresholding & label augmentation
-    img_mask = resize(img_mask_raw, (h, w, 3)) if 'svg' in name2 else resize(img_mask_raw, (h, w, 1))
+    img_mask = resize(img_mask_raw, (h, w, 3)) if 'svg' in name2 and not binary_mask else resize(img_mask_raw, (h, w, 1))
     img_mask = mask_preprocessing(img_mask, binary_mask)
     
     # Check dimensions
@@ -270,7 +272,7 @@ def read_images(name1, name2, h, w, limit=None, binary_mask=False, dilate=False)
     return img_frame, img_mask
 
 
-def img_preprocessing(img, limit=1.0, grid_size=(16, 16), dilate=True):
+def img_preprocessing(img, limit=1.0, grid_size=(16, 16), dilate=False, enhance=True):
     """
     Preprocessing raw images, remove background noises & smooth regional inhomogeneoous intensity
     
@@ -302,10 +304,13 @@ def img_preprocessing(img, limit=1.0, grid_size=(16, 16), dilate=True):
         img = img - dilated
         
     # AHE
-    img = np.round(img * 255.0).astype(np.uint8)
-    clahe = cv2.createCLAHE(clipLimit=limit, tileGridSize=grid_size)
-    img = clahe.apply(img) / 255.0
-    img = rescale_intensity(img, out_range=(0, 1))  # Rescale intensity
+    if enhance: # further separate foreground & background contrast
+        img = np.round(img * 255.0).astype(np.uint8)
+        clahe = cv2.createCLAHE(clipLimit=limit, tileGridSize=grid_size)
+        img = clahe.apply(img) / 255.0
+
+    # Rescale intensity
+    img = rescale_intensity(img, out_range=(0, 1))
     
     return np.expand_dims(img, axis=0)
 
@@ -434,18 +439,18 @@ def augmentation(root_path, mode='train'):
     p.ground_truth(mask_path)
     
     # Apply shift, rotation and elastic deformation
-    p.gaussian_distortion(1,
+    p.gaussian_distortion(0.3,
     
                           # grid axis for distortion (smaller value --> larger granular distortion)
                           grid_width=3, grid_height=3,
     
                           # magnitude & which corner to distort
-                          magnitude=50, corner='bell', method='in')
+                          magnitude=10, corner='bell', method='in')
     
-    p.rotate(1, max_left_rotation=20, max_right_rotation=20)
-    p.flip_random(0.5)
-    p.shear(0.5, max_shear_left=15, max_shear_right=15)
-    p.skew(0.5, magnitude=0.2)
+    p.rotate(0.3, max_left_rotation=10, max_right_rotation=10)
+    p.flip_random(0.3)
+    p.shear(0.2, max_shear_left=5, max_shear_right=5)
+    p.skew(0.2, magnitude=0.1)
     
     # Sampling
     sample_size = 10 * len(os.listdir(frame_path))
