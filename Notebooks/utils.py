@@ -122,7 +122,7 @@ def class_assignment(y_pred, t1, t2):
     return output
 
 
-def watershed_indep_masks(g, ft_size=4, thresh=0.1):
+def watershed_shape(g, ft_size=4, thresh=0.1):
     """
     Post-processing prediction matrix - watershed individual concave masks
     
@@ -173,6 +173,37 @@ def watershed_indep_masks(g, ft_size=4, thresh=0.1):
             g_output[g_indep_mask == 1] = 1
     
     return g_output
+
+
+def watershed_seed(orig_img, mask, seg_region=None, min_perim=2, sigma=-1, return_binary=True):
+    if isinstance(orig_img, torch.Tensor):
+        img = orig_img.detach().cpu().squeeze().numpy()
+    else:
+        img = orig_img.squeeze()
+    assert img.ndim == 2, 'Invalid dimension of input image'
+
+    if sigma > 0:  # Perform gaussian blur on input image
+        img = gaussian_filter(img, sigma=sigma)
+
+    # Find centroids of each individual first-round watershed mask
+    mask_labels = ndi.label(mask)[0]
+    unique_mask_labels = pd.Series(np.unique(mask_labels)[1:])
+    mask_coords_raw = unique_mask_labels.apply(lambda label: np.vectorize(lambda mask: mask == label)(mask_labels))
+
+    # debug: filter out tiny contours (noises)
+    mask_coords = mask_coords_raw[mask_coords_raw.apply(lambda x: (x == True).sum() >= min_perim)]
+
+    raw_seeds = mask_coords.apply(lambda x: np.array(np.where(x == True)).mean(1).astype(np.int16))
+    seeds = np.stack(raw_seeds.to_numpy())
+    marker_bools = np.zeros_like(img)
+    marker_bools[tuple(seeds.T)] = 1
+    markers = ndi.label(marker_bools)[0]
+
+    # second-round watershed based on the centroids of the first-round watershed
+    labels = watershed(img, markers=markers, mask=seg_region, watershed_line=True)
+    labels_binary = labels > 0
+
+    return labels_binary if return_binary else labels
         
 
 def plot_img_3d_distribution(img, figsize=(8, 6)):

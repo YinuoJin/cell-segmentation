@@ -78,7 +78,10 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
             
             # multi-label classification F1-score
             accuracies.append(calc_f1_score(y, output))  # multi-label accuracy
-            
+
+            del x, y, dist
+            torch.cuda.empty_cache()
+
     bar.finish()
     
     return np.mean(losses), np.mean(accuracies)
