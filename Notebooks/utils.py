@@ -373,3 +373,18 @@ class ShapeBCELoss(nn.Module):
             Shape-awared weights of each pixel, highlighting adjacent cell borders, smaller & concave cells
         """
         return F.binary_cross_entropy_with_logits(y_pred, y_true, weight)
+
+
+class DirectNetMSAELoss(nn.Module):
+    """
+    Mean-square-angular error loss for DN-Unet training
+    """
+    raise NotImplementedError()
+
+
+class WatershedNetBCELoss(nn.Module):
+    """
+    Weighted BCE loss for WTN-Unet training
+    """
+    raise NotImplementedError()
+

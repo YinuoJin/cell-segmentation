@@ -11,7 +11,7 @@ from scipy.stats import mode
 from scipy import ndimage as ndi
 from scipy.ndimage.morphology import distance_transform_edt
 from skimage.exposure import adjust_gamma, is_low_contrast, match_histograms, rescale_intensity
-from skimage.morphology import black_tophat, convex_hull_image, skeletonize, square, disk, dilation, reconstruction
+from skimage.morphology import black_tophat, convex_hull_image, skeletonize, square, disk, dilation, erosion,reconstruction
 from skimage.filters import threshold_mean
 from skimage.transform import resize
 from skimage.segmentation import find_boundaries
@@ -198,12 +198,280 @@ class DistmapDataLoader(data.Dataset):
         bar.finish()
             
         return weights
-        
-        
+
+
+class ImagePreprocessor():
+    """
+    Preprocessing raw images, remove background noises & smooth regional inhomogeneoous intensity
+
+    steps:
+        (1). (optional) Gamma adjustment
+        (2). (optional) Background correction
+        (3). (optional) Adaptive Histogram Equalization (AHE)
+        (4). Rescale intensity to [0,1]
+
+    Returns
+    -------
+    out : np.ndarray
+        Preprocessed image, shape=[1, H, W]
+    """
+
+    def __init__(self, img, h, w, gamma=0.5, limit=1.0, grid_size=(16, 16), dilate=False, enhance=True):
+        """
+        Parameters
+        ----------
+        img : np.ndarray
+            Raw image shape=[H, W]
+        gamma : np.float
+            parameter for gamma adjustment
+        limit : np.float
+            contrast limit value for AHE
+        grid_size : tuple of int
+            sliding-window size for AHE
+        dilate : bool
+            Whether to perform background correction via g - dilate(g)
+        enhance : bool
+            Whether to perform Adaptive Histogram Equalization (AHE)
+        """
+        self.gamma = gamma
+        self.limit = limit
+        self.height = h
+        self.width = w
+        self.grid_size = grid_size
+        self.dilate = dilate
+        self.enhance = enhance
+        self.img = resize(img, (h, w))
+
+    def _preprocess(self):
+        img_out = self.img.copy()
+        if is_low_contrast(self.img):
+            img_out = self._gamma_adjustment(self.img, self.gamma)
+        if self.dilate:
+            img_out = self._background_correction(img_out)
+        if self.enhance:
+            img_out = self._ahe(img_out, self.limit, self.grid_size)
+        img_out = rescale(img_out)
+
+        return np.expand_dims(img_out, axis=0)
+
+    @property
+    def out(self):
+        self._out = self._preprocess()
+        assert self._out.ndim == 3 and self._out.shape == (1, self.height, self.width)
+
+        return self._out
+
+    @staticmethod
+    def _gamma_adjustment(img, gamma):
+        return adjust_gamma(img, gamma)
+
+    @staticmethod
+    def _background_correction(img):
+        """Remove background noises via dilation"""
+        seed = img.copy()
+        seed[1:-1, 1:-1] = img.min()
+        dilated = reconstruction(seed, img, method='dilation')
+        img = img - dilated
+
+        return img
+
+    @staticmethod
+    def _ahe(img, limit, grid_size):
+        """Adjust inhomogeneous intensity distribution via adaptive histogram equalization"""
+        img = np.round(img * 255.0).astype(np.uint8)
+        clahe = cv2.createCLAHE(clipLimit=limit, tileGridSize=grid_size)
+        img = clahe.apply(img) / 255.0
+
+        return img
+
+
+class MaskPreprocessor():
+    """
+    Preprocessing masks: Rescaling, Binarization, Class augmentation, etc.
+
+    Returns
+    -------
+    out : np.ndarray
+        Output format (based on "self.option" parameter):
+       - binary:
+           1-channel binary ground-truth mask, shape=[1, H, W]
+           values: 0 = background, 1 = foreground
+       - multi:
+           3-channel ground-truth mask, shape=[3, H, W]
+           Output channels representing 3 classes:
+            (1). background
+            (2). cell region (nuclei / cytoplasm + nuclei)
+            (3). attached border of clotting cells
+       - vector:
+           2-channel unit-vector mask of direction of each foreground pixel to its closest bouondary, shape=[2, H, W]
+           Output channels representing vector decomposition along X & Y-axis
+       - energy:
+           N-channel energy mask modelling topography for watershed seeds selection, shape=[N, H, W]
+           Output channels representing one-hot encoded regions of each "energy level"
+    """
+
+    def __init__(self, img, h, w, c, option='multi'):
+        """
+        Parameters
+        ----------
+        img : np.ndarray
+            Ground truth masks: shape=[H, W, C=3] (if from from annotated fluroscence datasets) or [H, W, C=1]
+        c_out : np.int
+            number of output channels
+        """
+        self.height = h
+        self.width = w
+        self.c_in = c
+        self.option = option
+        self.img = resize(img, (h, w, c))
+
+    def _preprocess(self):
+        if self.option == 'binary':
+            img_out = self._binary_mask()
+        elif self.option == 'multi':
+            img_out = self._multi_mask()
+        elif self.option == 'vector':
+            img_out = self._vector_mask()
+        elif self.option == 'energy':
+            img_out = self._energy_mask()
+        else:
+            raise NotImplementedError("Unrecognized mask option: {0}".format(self.option))
+
+        return img_out
+
+    def _binary_mask(self, erode=True, n_pixel=1):
+        """Generate binary ground truth mask"""
+        img_out = np.expand_dims(self._binarize(rescale(self.img), erode, n_pixel), axis=0)
+
+        return img_out
+
+    def _multi_mask(self, thresh=0.5):
+        """Generate multi-class(3) ground truth mask"""
+        if self.img.mean() > thresh:
+            img_binary = self._binarize(rescale(self.img.squeeze()))
+            img_processed = self._fill_boundary_mask(img_binary)
+        else:
+            img_binary = self._binarize(self.img.squeeze()) if self.c_in == 1 else self._binarize_multi_channel(
+                self.img.transpose((2, 0, 1)))
+            img_processed = self._label_augment(img_binary)
+        img_out = self._one_hot_encoding(img_processed, ndim=3)
+
+        return img_out
+
+    def _vector_mask(self, eps=1e-20):
+        """Generate direction unit-vector mask"""
+        if self.c_in == 1:
+            img_binary = self._binarize(self.img.squeeze(), erode=True)
+        else:
+            img_binary = self.self._binarize_multi_channel(self.img.transpose((2, 0, 1)))
+        mat_x, mat_y = reversed(np.meshgrid(np.arange(img_binary.shape[0]), np.arange(img_binary.shape[1])))
+        dist_x, dist_y = distance_transform_edt(img_binary, return_distances=False, return_indices=True)
+        vec1, vec2 = dist_x - mat_x, dist_y - mat_y
+
+        # Normalize to unit vector
+        vec_norm = np.sqrt(np.power(vec1, 2) + np.power(vec2, 2))
+        vec_norm[vec_norm == 0] = eps
+        vec1_norm = vec1 / vec_norm
+        vec2_norm = vec2 / vec_norm
+        vec1_norm[img_binary == 0] = 0
+        vec2_norm[img_binary == 0] = 0
+
+        img_out = np.zeros((2, self.height, self.width))
+        img_out[0] = vec1_norm
+        img_out[1] = vec2_norm
+
+        return img_out
+
+    def _energy_mask(self, n_levels=4):
+        """Generate watershed energy mask"""
+        if self.c_in == 1:
+            img_binary = self._binarize(self.img.squeeze(), erode=True)
+        else:
+            img_binary = self.self._binarize_multi_channel(self.img.transpose((2, 0, 1)))
+        curr_level = np.zeros_like(img_binary)
+        img_energy = np.zeros_like(img_binary)
+        for i in range(n_levels - 1):
+            curr_level = erosion(img_binary, disk(2 * i + 1))
+            img_energy[curr_level == 1] = i + 1
+        img_out = self._one_hot_encoding(img_energy, ndim=n_levels)
+
+        return img_out
+
+    @property
+    def out(self):
+        self._out = self._preprocess()
+        assert self._out.ndim == 3, "Invalid output mask dimension {0}".format(self._out.ndim)
+        if self.option == 'binary':
+            assert self._out.shape[0] == 1, "Invalid channel dimension {0} for binary mask".format(self._out.shape[0])
+        elif self.option == 'multi':
+            assert self._out.shape[0] == 3, "Invalid channel dimension {0} for binary mask".format(self._out.shape[0])
+        elif self.option == 'vector':
+            assert self._out.shape[0] == 2, "Invalid channel dimension {0} for binary mask".format(self._out.shape[0])
+        else:
+            assert self._out.shape[0] == 4, "Invalid channel dimension {0} for binary mask".format(self._out.shape[0])
+
+        return self._out
+
+    @staticmethod
+    def _label_augment(g):
+        """Augment the 3rd class: attaching cell borders """
+        se = square(3)
+        g_tophat = black_tophat(g, se)
+        g_dilation = dilation(g_tophat, se)
+        g_aug = g + (np.max(g) + 1) * g_dilation
+        g_aug[g_aug == 3.0] = 2.0
+
+        # debug: try highlighting all borders as the 3rd label
+        g_aug[find_boundaries(g)] = 2.0
+
+        return g_aug
+
+    @staticmethod
+    def _fill_boundary_mask(g):
+        """Create filled-in masks for masks highlighting only boundary regions"""
+        g = dilation(g, disk(1))  # enhance cell borders
+        g_tmp_filled = ndi.binary_fill_holes(g)
+        is_boundary = np.bitwise_and(g_tmp_filled == 1.0, g == 1.0)
+
+        g_filled = np.zeros_like(g)
+        g_filled[g_tmp_filled == 1.0] = 1.0
+        g_filled[is_boundary] = 2.0
+
+        return g_filled
+
+    @staticmethod
+    def _binarize(g_orig, erode=False, n_pixel=1):
+        thresh = threshold_mean(g_orig)
+        g = (g_orig > thresh).astype(np.float)
+        if erode:
+            g = erosion(g, disk(n_pixel))
+
+        return g
+
+    @staticmethod
+    def _binarize_multi_channel(g_orig):
+        """Binarize input masks with 3 channels (storing different information)"""
+        g = np.zeros_like(g_orig[0])
+        g[g_orig[1] > 0.0] = 1.0
+        g[g_orig[2] > 0.0] = 1.0
+        g[g_orig[0] > 0.0] = 0.0
+
+        return g
+
+    @staticmethod
+    def _one_hot_encoding(g, ndim):
+        h, w = g.shape
+        g_one_hot = np.zeros((ndim, h, w))
+        for i in range(ndim):
+            g_one_hot[i, :, :] = (g == i).astype(np.float)
+
+        return g_one_hot
+
+
 def load_data(root_path,
               frame, mask,
               n_channel_frame=1,
-              n_channel_mask=3,
+              mask_option='multi',
               height=256,
               width=256,
               sigma=None,
@@ -212,18 +480,31 @@ def load_data(root_path,
               dilate=False,
               return_dist=None):
     """Load images from directory, preprocess & initialize dataloader object"""
+    # Configure num_channels of ground-truth masks
+    if mask_option == 'binary':
+        n_channel_mask = 1
+    elif mask_option == 'multi':
+        n_channel_mask = 3
+    # num_channels of unit-vector / WT energy masks
+    elif mask_option == 'vector':
+        n_channel_mask = 2
+    elif mask_option == 'energy':
+        n_channel_mask = 4
+    else:
+        raise NotImplementedError('Unforseen mask option {0}'.format(mask_option))
+
     # Read file names
     frame_path = os.path.join(root_path, frame)
     mask_path = os.path.join(root_path, mask)
     frame_names = sorted(os.listdir(frame_path))
     mask_names = sorted(os.listdir(mask_path))
-    
+
     assert os.path.exists(frame_path) and os.path.exists(mask_path), "Image directory doesn't exist!!"
     assert return_dist is None or \
            return_dist == 'boundary' or \
            return_dist == 'dist' or \
            return_dist == 'saw', "Unrecognized return_dist option {0}".format(return_dist)
-    
+
     # Read raw images of frames & masks, store them in np.ndarray
     bar = ChargingBar('Loading', max=len(frame_names), suffix='%(percent)d%%')
     mat_frame = np.zeros((len(frame_names), n_channel_frame, height, width))
@@ -233,181 +514,61 @@ def load_data(root_path,
         bar.next()
         mat_frame[i], mat_mask[i] = read_images(os.path.join(frame_path, frame_name),
                                                 os.path.join(mask_path, mask_name),
-                                                height,
-                                                width,
-                                                limit,
-                                                n_channel_mask == 1,
-                                                dilate,
-                                                enhance)
-        
+                                                h=height,
+                                                w=width,
+                                                limit=limit,
+                                                dilate=dilate,
+                                                enhance=enhance,
+                                                mask_option=mask_option)
+
     bar.finish()
     dataset = ImageDataLoader(mat_frame, mat_mask)
     distset = None if return_dist is None else DistmapDataLoader(mat_mask, sigma, return_dist)
-    
+
     return dataset, distset
 
 
-def read_images(name1, name2, h, w, limit=None, binary_mask=False, dilate=False, enhance=False):
+def read_images(name1, name2, h, w, limit=None, dilate=False, enhance=False, mask_option='multi'):
     """Read and preprocess the images"""
-    img_frame_raw = cv2.imread(name1, cv2.IMREAD_COLOR)
+    img_frame_raw = crop_img(cv2.imread(name1, cv2.IMREAD_COLOR))
     img_frame_gray = cv2.cvtColor(img_frame_raw, cv2.COLOR_BGR2GRAY)  # Convert raw image to grayscale
-    img_mask_raw = cv2.imread(name2, cv2.IMREAD_COLOR)
-    
-    # Raw image preprocessing
+    img_mask_raw = crop_img(cv2.imread(name2, cv2.IMREAD_COLOR))
+
+    # Image & mask preprocessing
     if limit is None:
         limit = 1.0 if 'svg' in name1 else 5.0
-    img_frame = resize(img_frame_gray, (h, w))
-    img_frame = img_preprocessing(img_frame, limit=limit, dilate=dilate, enhance=enhance)
-    
-    # Mask preprocessing, thresholding & label augmentation
-    img_mask = resize(img_mask_raw, (h, w, 3)) if 'svg' in name2 and not binary_mask else resize(img_mask_raw, (h, w, 1))
-    img_mask = mask_preprocessing(img_mask, binary_mask)
-    
-    # Check dimensions
-    if binary_mask:
-        assert img_frame.shape == (1, h, w) and img_mask.shape == (1, h, w), 'Invalid image shape!'
-    else:
-        assert img_frame.shape == (1, h, w) and img_mask.shape == (3, h, w), 'Invalid image shape!'
-        
+    img_frame = ImagePreprocessor(img_frame_gray, h, w, limit=limit, dilate=dilate, enhance=enhance).out
+    n_channel_mask_resize = 3 if 'svg' in name2 else 1
+    img_mask = MaskPreprocessor(img_mask_raw, h, w, c=n_channel_mask_resize, option=mask_option).out
+
     return img_frame, img_mask
 
 
-def img_preprocessing(img, limit=1.0, grid_size=(16, 16), dilate=False, enhance=True):
-    """
-    Preprocessing raw images, remove background noises & smooth regional inhomogeneoous intensity
-    
-    steps:
-        (1). (optional) Gamma adjustment
-        (2). (optional) Background correction
-        (3). Adaptive Histogram Equalization (AHE)
-        (4). Rescale intensity to [0,1]
-    
-    Parameters
-    ----------
-    img : np.ndarray
-        Raw image shape=[H, W]
-    limit : np.float
-        contrast limit value for AHE
-    grid_size : tuple of int
-        sliding-window size for AHE
-    dilate : bool
-        Whether to perform background correction via g - dilate(g)
-    """
-    # Gamma adjustment
-    img = adjust_gamma(img, 0.5) if is_low_contrast(img) else img
-    
-    # Background correction with morphologial operations (g - dilation(g))
-    if dilate:
-        seed = img.copy()
-        seed[1:-1, 1:-1] = img.min()
-        dilated = reconstruction(seed, img, method='dilation')
-        img = img - dilated
-        
-    # AHE
-    if enhance: # further separate foreground & background contrast
-        img = np.round(img * 255.0).astype(np.uint8)
-        clahe = cv2.createCLAHE(clipLimit=limit, tileGridSize=grid_size)
-        img = clahe.apply(img) / 255.0
-
-    # Rescale intensity
-    img = rescale_intensity(img, out_range=(0, 1))
-    
-    return np.expand_dims(img, axis=0)
-
-
-def mask_preprocessing(img, binary_mask=False):
-    """
-    Preprocessing masks: Rescaling, Binarization, Class augmentation
-
-    Output channels representing 3 classes:
-        (1). background
-        (2). cell region (cytoplasm + nuclei)
-        (3). attached border of clotting cells
-
-    Parameters
-    ----------
-    img : np.ndarray
-        Ground truth masks: shape=[H, W, 3] (if from from annotated fluroscence datasets) or [H, W, 1]
-    binary_mask : bool
-        Whether return binarized mask or one-hot encoded (3-channel) mask (default=False)
-
-    Returns
-    -------
-    img_one_hot : np.ndarray
-        one-hot encoded ground truth mask, shape=[3, H, W]
-    """
-    
-    def _label_augment(g):
-        """Augment the 3rd class: attaching cell borders """
-        se = square(3)
-        g_tophat = black_tophat(g, se)
-        g_dilation = dilation(g_tophat, se)
-        g_aug = g + (np.max(g) + 1) * g_dilation
-        g_aug[g_aug == 3.0] = 2.0
-        
-        # debug: try highlighting all borders as the 3rd label
-        g_aug[find_boundaries(g)] = 2.0
-        
-        return g_aug
-    
-    def _fill_boundary_mask(g):
-        """Create filled-in masks for original boundary masks"""
-        g = _binarize(rescale(g))
-        g = dilation(g, disk(1))  # enhance cell borders
-        g_tmp_filled = ndi.binary_fill_holes(g)
-        is_boundary = np.bitwise_and(g_tmp_filled == 1.0, g == 1.0)
-        
-        g_filled = np.zeros_like(g)
-        g_filled[g_tmp_filled == 1.0] = 1.0
-        g_filled[is_boundary] = 2.0
-        # dist_to_background = ndi.distance_transform_edt(g_tmp_filled)
-        # g_filled[dist_to_background <= 2.0] = 0.0
-        
-        return g_filled
-    
-    def _binarize_multi_channel(g_orig):
-        g = np.zeros_like(g_orig[0])
-        g[g_orig[1] > 0.0] = 1.0
-        g[g_orig[2] > 0.0] = 1.0
-        g[g_orig[0] > 0.0] = 0.0
-        
-        return g
-    
-    def _binarize(g_orig):
-        thresh = threshold_mean(g_orig)
-        g = (g_orig > thresh).astype(np.float)
-        
-        return g
-    
-    def _one_hot_encoding(g):
-        h, w = g.shape
-        g_one_hot = np.zeros((3, h, w))
-        for i in range(3):
-            g_one_hot[i, :, :] = (g == i).astype(np.float)
-        
-        return g_one_hot
-    
-    if binary_mask:
-        img_out = _binarize(rescale(img))
-        img_out = np.expand_dims(dilation(img_out.squeeze(), disk(1)), axis=0)
+def crop_img(img):
+    """Crop image to have square shape"""
+    if img.ndim == 2:
+        h, w = img.shape
+    elif img.ndim == 3:
+        h, w, _ = img.shape
     else:
-        if img.mean() > 0.5:
-            img_processed = _fill_boundary_mask(img.squeeze())
-        else:
-            img_binary_raw = _binarize(img.squeeze()) if img.shape[2] == 1 else _binarize_multi_channel(
-                img.transpose((2, 0, 1)))
-            img_processed = _label_augment(img_binary_raw)
-        img_out = _one_hot_encoding(img_processed)
-    
-    return img_out
-    
-    
+        raise ValueError('Unrecognized image dimension')
+    side_length = min(h, w)
+    if w == side_length:
+        h_left = h // 2 - side_length // 2
+        img_cropped = img[h_left:h_left + side_length, ...]
+    else:
+        w_left = w // 2 - side_length // 2
+        img_cropped = img[:, w_left:w_left + side_length, ...]
+
+    return img_cropped
+
+
 def rescale(img, threshold=0.5):
     """Rescale masks, reverse the image if background value exceeds the threshold"""
     if mode(img, axis=None)[0] > threshold:
         img = img.max() - img
-    img_scaled = (img - img.min()) / (img.max() - img.min())  # Min-max scale
-    
+    img_scaled = rescale_intensity(img, out_range=(0, 1))  # Min-max scale
+
     return img_scaled
 
 
