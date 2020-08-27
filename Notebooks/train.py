@@ -155,16 +155,30 @@ if __name__ == '__main__':
     
     sigma = None
     if dist == 'saw': sigma = 3 if 'nuclei' in root_path else 1
-    
+
+    # TODO: find better interface for n_output_channels and mask_options
+    # abstract functions for 'Unet' training & DN + WTN training
+    # for now use the following lines
+    if n_output_channels == 1:
+        mask_option = 'binary'
+    elif n_output_channels == 3:
+        mask_option = 'multi'
+    elif n_output_channels == 2:
+        mask_option = 'vector'
+    elif n_output_channels == 4:
+        mask_option = 'energy'
+    else:
+        raise NotImplementedError('Invalid output channel dimension = {0}'.format(n_output_channels))
+
     # load dataset
     print('Loading datasets...')
     print('- Training set:')
     train_dataset, train_distmap = load_data(root_path, 'train_frames', 'train_masks',
-                                             n_channel_mask=n_output_channels, sigma=sigma,
+                                             mask_option=mask_option, sigma=sigma,
                                              return_dist=dist)
     print('- Validation set:')
     val_dataset, val_distmap = load_data(root_path, 'val_frames', 'val_masks',
-                                         n_channel_mask=n_output_channels, sigma=sigma,
+                                         mask_option=mask_option, sigma=sigma,
                                          return_dist=dist)
     # print('- Test set':')
     # test_dataset = load_data(root_path, 'test_frames', 'test_masks')

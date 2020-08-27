@@ -192,7 +192,7 @@ class DistmapDataLoader(data.Dataset):
     
             # Sum imbalance class weight & shape-awared weight: (W_saw = W_class + W_shape)
             weight = _calc_weight_class(g) + ndi.gaussian_filter(contour_union * (1 - phi_k / tau), sigma=sigma)
-            weight_scaled = weight * 10
+            weight_scaled = weight * 5
             weights[i] = np.expand_dims(weight_scaled, axis=0)
             
         bar.finish()

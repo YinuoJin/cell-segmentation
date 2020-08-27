@@ -377,14 +377,47 @@ class ShapeBCELoss(nn.Module):
 
 class DirectNetMSAELoss(nn.Module):
     """
-    Mean-square-angular error loss for DN-Unet training
+    Mean-square-angular error loss (a.k.a "Direction loss") for DN-Unet training
     """
-    raise NotImplementedError()
+    def __init__(self):
+        super(DirectNetMSAELoss, self).__init__()
+
+    def forward(self, y_true, y_pred, weight):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth direction unit-vector matrix, shape: [B, C, H, W], C = 2 (x & y decomposition of the vector)
+        y_pred : torch.Tensor
+            predicted direction unit-vector matrixm shape: [B, C, H, W], C = 4
+        weight : torch,Tensor
+            Shape & area awared weights of each pixel, ignore background region and weight higher at cell boundary & smaller cells
+        """
+        angular_dist = np.power(np.einsum('bchw, bchw -> bhw', y_true, y_pred), 2)
+        direction_loss = np.einsum('bchw, bchw -> bc', weight, angular_dist).mean()
+
+        return direction_loss
 
 
 class WatershedNetBCELoss(nn.Module):
     """
     Weighted BCE loss for WTN-Unet training
     """
-    raise NotImplementedError()
+    def __init__(self):
+        super(WatershedNetBCELoss, self).__init__()
 
+    def forward(self, y_true, y_pred, shape_weight):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth direction unit-vector matrix, shape: [B, C, H, W], C = 4 (x & y decomposition of the vector)
+        y_pred : torch.Tensor
+            predicted direction unit-vector matrixm shape: [B, C, H, W], C = 4
+        shape_weight : torch,Tensor
+            Shape & area awared weights of each pixel, ignore background region and weight higher at cell boundary & smaller cells
+        """
+        class_weight_unique = np.array([3,3,2,1])
+        class_weight = np.einsum('c, bchw -> bchw', class_weight_unique, np.ones_like(y_true))
+
+        return F.binary_cross_entropy_with_logits(y_pred, y_true, class_weight*shape_weight)
