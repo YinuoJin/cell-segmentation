@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 
 from scipy import ndimage as ndi
 from scipy.spatial.distance import directed_hausdorff
-from scipy import ndimage as ndi
 from sklearn.metrics import accuracy_score, f1_score
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
@@ -87,93 +86,7 @@ def calc_f1_score(y_true, y_pred):
         accuracies.append(f1_score(r1_label.flatten(), r2_label.flatten(), average='weighted'))
         
     return np.mean(accuracies)
-
-
-def class_assignment(y_pred, t1, t2):
-    """
-    Assign class labels from segmentation predictions
     
-    Parameters
-    ----------
-    y_pred  : torch.Tensor
-        predicted output matrix (softmax output) shape: (B, C=3, H, W)
-    t1 : float
-        threshold 1 - cutoff for class 0 & 1 assignment (background & cell foreground)
-    t2 : float
-        threshold 2 - cutoff for class 2 asssignment (attaching border)
-    """
-    output = np.zeros_like(y_pred)
-    for i, y in enumerate(y_pred):
-        curr_output = output[i]
-        mask1 = y[2] > t2
-        curr_output[mask1] = 2
-        mask2 = np.bitwise_and(y[1] > t1, curr_output != 2)
-        curr_output[mask2] = 1
-        
-        # Assign pixels with label=2 to its closest adjacent cells
-        c1, c2 = mask1.astype(np.int8), mask2.astype(np.int8)
-        dist = ndi.distance_transform_edt(1-c1, return_indices=True) * c2
-        dist[dist == 0] = np.inf
-        r_coords, c_coords = np.where(dist == dist.min())
-        for r, c in zip(r_coords, c_coords):
-            curr_output[r, c] = 1
-        curr_output[curr_output != 1] = 0
-    
-    return output
-
-
-def watershed_indep_masks(g, ft_size=4, thresh=0.1):
-    """
-    Post-processing prediction matrix - watershed individual concave masks
-    
-    Parameters
-    ----------
-    g : np.ndarray
-        predicted mask, shape=(h, w)
-    ft_size : int
-        FIlter size for watershed markers detection
-    thresh : float
-        threshold value for "Concave" mask determination
-        let g_concave = convex(g) \ g, thresh = Area(g_concave) / Area(g)
-        
-    Returns
-    -------
-    g_output : np.ndarray
-        Output watershed segmented results of each independent predicted mask
-    """
-    def _g_watershed(indep_mask, ft_size):
-        # distance = distance_transform_edt(indep_mask)
-        distance = ndi.distance_transform_cdt(indep_mask)
-        try:
-            local_maxi = peak_local_max(distance, indices=False, footprint=np.ones((ft_size, ft_size)),
-                                        labels=indep_mask)
-            markers = ndi.label(local_maxi)[0]
-            labels = watershed(-distance, markers, mask=indep_mask, watershed_line=True)
-            labels_binary = (labels > 0).astype(np.float)
-        except IndexError:
-            labels_binary = np.zeros_like(indep_mask)
-        
-        return labels_binary
-    
-    # Generate n 2D arrays, separating individual masks from each other
-    contours = get_contour(g)
-    g_output = np.zeros((g.shape[0], g.shape[1]))
-    for i in range(len(contours)):
-        g_indep_mask = np.zeros_like(g_output)
-        contour = contours[i].squeeze(axis=1).astype(np.int32)
-        cv2.fillPoly(g_indep_mask, pts=[contour], color=(255, 255, 255))
-        g_indep_mask /= 255.0
-        g_convex = convex_hull_image(g_indep_mask)
-        g_concave_comp = g_convex - g_indep_mask
-        
-        if (g_concave_comp == 1.0).sum() / (g_indep_mask == 1.0).sum() >= thresh:
-            g_ws = _g_watershed(g_indep_mask, ft_size)
-            g_output[g_ws == 1] = 1
-        else:
-            g_output[g_indep_mask == 1] = 1
-    
-    return g_output
-        
 
 def plot_img_3d_distribution(img, figsize=(8, 6)):
     """
@@ -342,3 +255,51 @@ class ShapeBCELoss(nn.Module):
             Shape-awared weights of each pixel, highlighting adjacent cell borders, smaller & concave cells
         """
         return F.binary_cross_entropy_with_logits(y_pred, y_true, weight)
+
+
+class DirectNetMSAELoss(nn.Module):
+    """
+    Mean-square-angular error loss (a.k.a "Direction loss") for DN-Unet training
+    """
+    def __init__(self):
+        super(DirectNetMSAELoss, self).__init__()
+
+    def forward(self, y_true, y_pred, weight):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth direction unit-vector matrix, shape: [B, C, H, W], C = 2 (x & y decomposition of the vector)
+        y_pred : torch.Tensor
+            predicted direction unit-vector matrixm shape: [B, C, H, W], C = 4
+        weight : torch,Tensor
+            Shape & area awared weights of each pixel, ignore background region and weight higher at cell boundary & smaller cells
+        """
+        angular_dist = np.power(np.einsum('bchw, bchw -> bhw', y_true, y_pred), 2)
+        direction_loss = np.einsum('bchw, bchw -> bc', weight, angular_dist).mean()
+
+        return direction_loss
+
+
+class WatershedNetBCELoss(nn.Module):
+    """
+    Weighted BCE loss for WTN-Unet training
+    """
+    def __init__(self):
+        super(WatershedNetBCELoss, self).__init__()
+
+    def forward(self, y_true, y_pred, shape_weight):
+        """
+        Parameters
+        ----------
+        y_true : torch.Tensor
+            ground truth direction unit-vector matrix, shape: [B, C, H, W], C = 4 (x & y decomposition of the vector)
+        y_pred : torch.Tensor
+            predicted direction unit-vector matrixm shape: [B, C, H, W], C = 4
+        shape_weight : torch,Tensor
+            Shape & area awared weights of each pixel, ignore background region and weight higher at cell boundary & smaller cells
+        """
+        class_weight_unique = np.array([3,3,2,1])
+        class_weight = np.einsum('c, bchw -> bchw', class_weight_unique, np.ones_like(y_true))
+
+        return F.binary_cross_entropy_with_logits(y_pred, y_true, class_weight*shape_weight)
