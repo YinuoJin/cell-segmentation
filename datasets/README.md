@@ -1,1 +1,1 @@
-### directory for images & masks
+### Directory for datasets

@@ -26,14 +26,14 @@ def get_contour(img, external=True, draw=False):
     img_copy = np.round(img_copy * 255.0).astype(np.uint8)
     _, thresh = cv2.threshold(img_copy, 127, 255, 0)
     contours, _ = cv2.findContours(thresh, mode, cv2.CHAIN_APPROX_NONE)
-    
+
     if not draw:
         return contours
     else:
         img_processed = np.zeros_like(img)
         cv2.drawContours(img_processed, contours, -1, (255, 255, 255), 1)
         img_processed = img_processed / 255.0  # Convert back from [0, 255] to [0, 1]
-    
+
     return contours, img_processed
 
 
@@ -53,7 +53,7 @@ def hausdorff(y_true, y_pred):
             hd = max(directed_hausdorff(r1_binary, r2_binary)[0], directed_hausdorff(r2_binary, r1_binary)[0])
 
         hd_list.append(hd)
-        
+
     return np.mean(hd_list)
 
 
@@ -64,7 +64,7 @@ def calc_accuracy_score(y_true, y_pred):
         r2 = r2.detach().cpu().numpy()
         r1_label, r2_label = np.argmax(r1, axis=0), np.argmax(r2, axis=0)
         accuracies.append(accuracy_score(r1_label.flatten(), r2_label.flatten()))
-        
+
     return np.mean(accuracies)
 
 
@@ -73,20 +73,20 @@ def calc_f1_score(y_true, y_pred):
     for r1, r2 in zip(y_true, y_pred):
         r1 = r1.detach().cpu().numpy()
         r2 = r2.detach().cpu().numpy()
-        
+
         if r1.shape[0] > 1:
             r1_label, r2_label = np.argmax(r1, axis=0), np.argmax(r2, axis=0)
         else:
             r1_label = np.zeros((2, r1.shape[1], r1.shape[2]))
-            r2_label = np.zeros_like(r1_label) 
+            r2_label = np.zeros_like(r1_label)
             r1_label[0, r1.squeeze() < 0.5] = 1
             r1_label[1, r1_label[0] == 0] = 1
             r2_label[0, r2.squeeze() < 0.5] = 1
             r2_label[1, r2_label[0] == 0] = 1
         accuracies.append(f1_score(r1_label.flatten(), r2_label.flatten(), average='weighted'))
-        
+
     return np.mean(accuracies)
-    
+
 
 def plot_img_3d_distribution(img, figsize=(8, 6)):
     """
@@ -98,14 +98,14 @@ def plot_img_3d_distribution(img, figsize=(8, 6)):
         img = img.squeeze()
     else:
         img = img.mean(-1)
-    
+
     img_vals = np.zeros((height * width, 3))
     img_vals[:, 0] = np.repeat(np.arange(height), width)
     img_vals[:, 1] = np.tile(np.arange(width), height)
     img_vals[:, 2] = img.flatten()
-    
+
     df = pd.DataFrame(img_vals, columns=['X', 'Y', 'Z'])
-    
+
     # plot
     fig = plt.figure(figsize=figsize)
     ax = fig.gca(projection='3d')
@@ -120,10 +120,10 @@ def plot_img_histogram(img, figsize=(8, 6)):
     # reference: https://docs.opencv.org/master/d5/daf/tutorial_py_histogram_equalization.html
     img = img.transpose((1, 2, 0))  # change image order to [H, W, C]
     hist, bins = np.histogram(img.flatten(), 256, [0, 1])
-    
+
     cdf = hist.cumsum()
     cdf_normalized = cdf * float(hist.max()) / cdf.max()
-    
+
     plt.figure(figsize=figsize)
     plt.plot(cdf_normalized, color='b')
     plt.hist(img.flatten(), 256, [0, 1])
@@ -142,14 +142,14 @@ class IoULoss(nn.Module):
     """
     Intersection over Union (IoU) / Jaccard loss:
     Jaccard(A, B) = |A ∩ B| / |A ∪ B|
-    
+
     reference: https://github.com/LIVIAETS/surface-loss/blob/master/losses.py
     """
-    
+
     def __init__(self, smooth=1e-6):
         super(IoULoss, self).__init__()
         self.smooth = smooth
-        
+
     def forward(self, y_true, y_pred):
         """
         Parameters
@@ -162,9 +162,9 @@ class IoULoss(nn.Module):
         intersection = torch.einsum('bchw,bchw->bc', y_true, y_pred)
         total = torch.einsum('bchw->bc', y_true) + torch.einsum('bchw->bc', y_pred)
         union = total - intersection
-        
+
         iou = ((intersection + self.smooth) / (union + self.smooth)).mean()
-        
+
         return 1 - iou
 
 
@@ -172,14 +172,14 @@ class SoftDiceLoss(nn.Module):
     """
     Soft Dice Loss:
     Dice(A, B) = (2 * |A ∩ B|) / (|A| + |B|)
-    
+
     reference: https://github.com/LIVIAETS/surface-loss/blob/master/losses.py
     """
     # todo: Generalize to multi-class segmentation
     def __init__(self, smooth=1e-6):
         super(SoftDiceLoss, self).__init__()
         self.smooth = smooth
-        
+
     def forward(self, y_true, y_pred):
         """
         Parameters
@@ -191,16 +191,16 @@ class SoftDiceLoss(nn.Module):
         """
         intersection = torch.einsum('bchw,bchw->bc', y_true, y_pred)
         total = torch.einsum('bchw->bc', y_true) + torch.einsum('bchw->bc', y_pred)
-        
+
         dice = ((2.0 * intersection + self.smooth) / (total + self.smooth)).mean()
-        
+
         return 1 - dice
-    
-    
+
+
 class SurfaceLoss(nn.Module):
     """
     Combination of Region based loss & Contour (boundary)-based loss
-    
+
     reference: https://github.com/LIVIAETS/surface-loss/blob/master/losses.py
     """
     # todo: Generalize to multi-class segmentation
@@ -217,7 +217,7 @@ class SurfaceLoss(nn.Module):
         self.alpha = alpha
         self.use_dice = dice
         self.region_loss = SoftDiceLoss() if dice else IoULoss()
-        
+
     def forward(self, y_true, y_pred, theta_true):
         """
         Parameters
@@ -232,17 +232,17 @@ class SurfaceLoss(nn.Module):
         boundary_dist = torch.einsum('bchw,bchw->bchw', y_pred, theta_true)
         boundary_loss = boundary_dist.mean()
         region_loss = self.region_loss(y_true, y_pred)
-        
+
         return self.alpha * region_loss + (1 - self.alpha) * boundary_loss
 
-    
+
 class ShapeBCELoss(nn.Module):
     """
     Shape-aware BCE loss based on distance / shape-based loss functions
     """
     def __init__(self):
         super(ShapeBCELoss, self).__init__()
-        
+
     def forward(self, y_true, y_pred, weight):
         """
         Parameters

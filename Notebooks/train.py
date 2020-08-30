@@ -33,18 +33,18 @@ def train(root_path, bs, lr, pc, mask_option, dist, sigma, loss_fn, alpha):
     if train_distmap is not None:
         train_distmap = data.DataLoader(train_distmap, batch_size=bs)
         val_distmap = data.DataLoader(val_distmap, batch_size=bs)
-    
+
     # Initialize network & training, transfer to GPU is available
     c_out = 1 if option == 'binary 'else 3
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     net = Unet(1, c_out)
     net.to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=lr, amsgrad=True)
-    
+
     train_accs, train_losses, val_accs, val_losses = [], [], [], []
     best_val_loss = np.inf
     check_point_filename = 'model_checkpoint.pt'
-    
+
     # training
     print('Training the network...')
     max_pc = pc
@@ -53,23 +53,23 @@ def train(root_path, bs, lr, pc, mask_option, dist, sigma, loss_fn, alpha):
         if loss == 'boundary':
             loss_fn.alpha = alpha
             alpha -= 0.005 if alpha > 0.75 else alpha
-        
+
         print('*------------------------------------------------------*')
         train_loss, train_acc = run_one_epoch(net, train_dataloader, train_distmap, optimizer, loss_fn, train=True,
                                               device=device)
         val_loss, val_acc = run_one_epoch(net, val_dataloader, val_distmap, optimizer, loss_fn, device=device)
-        
+
         train_accs.append(train_acc)
         train_losses.append(train_loss)
         val_accs.append(val_acc)
         val_losses.append(val_loss)
-        
+
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(net.state_dict(), check_point_filename)
         else:
             pc -= 1
-        
+
         if pc <= 0:
             if early_stop:  # early stopping
                 break
@@ -77,11 +77,11 @@ def train(root_path, bs, lr, pc, mask_option, dist, sigma, loss_fn, alpha):
                 pc = max_pc
                 lr /= 2
                 optimizer = torch.optim.Adam(net.parameters(), lr=lr, amsgrad=True)
-        
+
         delta_t = time.perf_counter() - t0
         print("Epoch %i took %.2fs. Train loss: %.4f acc: %.4f. Val loss: %.4f acc: %.4f. Patience left: %i" %
               (epoch + 1, delta_t, train_loss, train_acc, val_loss, val_acc, pc))
-        
+
     return train_accs, train_losses, val_accs, val_losses
 
 
@@ -96,15 +96,15 @@ def test(data_path, model, sigma=None, display=False):
         y_pred = model(x)
         y_pred_final = Postprocessor(x, y_pred).out
         y_pred_results.append(y_pred_final)
-        
+
         if display:
             plt.imshow(y_pred_final, cmap='gray')
             plt.show()
             plt.close()
-        
+
     return y_pred_results
-    
-    
+
+
 def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, device=None):
     """Single epoch training/validating"""
     torch.set_grad_enabled(train)
@@ -116,7 +116,7 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
         bar = ChargingBar('Train', max=len(dataloader), suffix='%(percent)d%%')
     else:
         bar = ChargingBar('Valid', max=len(dataloader), suffix='%(percent)d%%')
-    
+
     if distmap is None: # loss functions without distmap
         for dp in dataloader:
             bar.next()
@@ -125,7 +125,7 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
             x, y = x.to(device), y.to(device)
             output = model(x)
             loss = loss_fn(y, output)
-        
+
             if train:  # backpropagation
                 optimizer.zero_grad()
                 loss.backward()
@@ -151,7 +151,7 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
             x, y, dist = x.to(device), y.to(device), dist.to(device)
             output = model(x)
             loss = loss_fn(y, output, dist)
-        
+
             if train:  # backpropagation
                 optimizer.zero_grad()
                 loss.backward()
@@ -165,7 +165,7 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
             # binary classification accuracy
             # accuracy = torch.mean(((output > 0.5) == (y > 0.5)).float())
             # accuracies.append(accuracy.detach().cpu().numpy())
-            
+
             # multi-label classification F1-score
             accuracies.append(calc_f1_score(y, output))  # multi-label accuracy
 
@@ -173,7 +173,7 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, d
             torch.cuda.empty_cache()
 
     bar.finish()
-    
+
     return np.mean(losses), np.mean(accuracies)
 
 
@@ -191,8 +191,8 @@ def save_history(train_accs, train_losses, val_accs, val_losses, out_path=None):
     np.savetxt(out_path + 'loss_train.txt', train_losses)
     np.savetxt(out_path + 'acc_val.txt', val_accs)
     np.savetxt(out_path + 'loss_val.txt', val_losses)
-    
-    
+
+
 def save_test_pred(results, data_path, out_path=None):
     """Save postprocessed test predictions"""
     print('Saving predicted images...')
@@ -200,11 +200,12 @@ def save_test_pred(results, data_path, out_path=None):
     if out_path == None:
         out_path = '../predictions/'
     os.makedirs(out_path, exist_ok=True)
-    
+
     for i, res in results:
         fname = prefix + str(i)
         cv2.imwrite(out_path + fname, res)
-    
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Unet training options',
             formatter_class=RawTextHelpFormatter)
@@ -214,7 +215,7 @@ if __name__ == '__main__':
                         help='Root directory of input image datasets for training/testing')
     required.add_argument('--option', dest='option', type=str, required=True, action='store',
                         help='Training / Testing option: (1). binary, (2). multi, (3). dwt, (4). test')
-    
+
     optional = parser.add_argument_group('optional arguments')
     optional.add_argument('-b', dest='batch_size', type=int, default=4, action='store',
                         help='Batch size')
@@ -251,7 +252,7 @@ if __name__ == '__main__':
     region_option = args.region_option
     dist = None  # weighted distmap indicator
     alpha = None  # parameter for boundary loss
-    
+
     # data augmentation on training
     if augment:
         print('Performing data augmentation...')
@@ -259,7 +260,7 @@ if __name__ == '__main__':
         augmentation(root_path, mode='val')
         augmentation(root_path, mode='test')
         exit()
-        
+
     if loss == 'bce':
         dist = 'dist' if option == 'binary' else 'saw'
         loss_fn = ShapeBCELoss()
@@ -291,6 +292,5 @@ if __name__ == '__main__':
     elif option == 'test':
         pred_results = test(data_path=root_path, model=args.model)
         save_test_pred(results=pred_results, data_path=root_path)
-        
     else:
         raise NotImplementedError('Unforeseen training/test option: {0}'.format(option))
