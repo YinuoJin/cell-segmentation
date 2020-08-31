@@ -4,8 +4,6 @@ import time
 import numpy as np
 import cv2
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import argparse
 
@@ -35,7 +33,7 @@ def train(root_path, bs, lr, pc, mask_option, dist, sigma, loss_fn, alpha):
         val_distmap = data.DataLoader(val_distmap, batch_size=bs)
 
     # Initialize network & training, transfer to GPU is available
-    c_out = 1 if option == 'binary 'else 3
+    c_out = 1 if mask_option == 'binary 'else 3
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     net = Unet(1, c_out)
     net.to(device)
@@ -85,24 +83,45 @@ def train(root_path, bs, lr, pc, mask_option, dist, sigma, loss_fn, alpha):
     return train_accs, train_losses, val_accs, val_losses
 
 
-def test(data_path, model, sigma=None, display=False):
-    y_pred_results = []
-    test_dataset, test_distmap = load_data(data_path, '', '',
-                                             mask_option='multi', sigma=sigma,
-                                             return_dist=dist)
-    test_dataloader = data.DataLoader(test_dataset, batch_size=1)
-    for x, _ in test_dataloader:
-        x = x.float()
-        y_pred = model(x)
-        y_pred_final = Postprocessor(x, y_pred).out
-        y_pred_results.append(y_pred_final)
+def joint_pred(data_path, model_path, mask_option, sigma=None, display=False):
+    """Joint prediction with nuclei prediction model, watershed over ecad images"""
+    pred_results = []
+    print('Loading datasets...')
+    print('- Test set {0}:'.format(data_path.split('/')[-2]))
+    dapi_dataset, _ = load_data(data_path, 'dapi', 'dapi', mask_option='multi', sigma=sigma, enhance=True)
+    ecad_dataset, _ = load_data(data_path, 'ecad', 'ecad', mask_option='multi', sigma=sigma)
+    dapi_dataloader = data.DataLoader(dapi_dataset, batch_size=1)
+    ecad_dataloader = data.DataLoader(ecad_dataset, batch_size=1)
+    
+    # Initialize network & training, transfer to GPU is available
+    c_out = 1 if mask_option == 'binary 'else 3
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # debug
+    nuclei_net = Unet(1, c_out)
+    nuclei_net.load_state_dict(torch.load(model_path))
+    nuclei_net.to(device)
+    
+    print('Predicting test results...')
+    bar = ChargingBar('Test', max=len(dapi_dataloader), suffix='%(percent)d%%')
+    for dapi, ecad in zip(dapi_dataloader, ecad_dataloader):
+        bar.next()
+        dapi_img, ecad_img = dapi[0].float().to(device), ecad[0].float().to(device)
+        joint_pred = Postprocessor(ecad_img, nuclei_net(dapi_img)).out
+        pred_results.append(joint_pred)
 
         if display:
-            plt.imshow(y_pred_final, cmap='gray')
+            plt.figure(figsize=(20, 10))
+            plt.subplot(1,2,1)
+            plt.imshow(dapi_img.detach().cpu().squeeze().numpy(), cmap='gray')
+            plt.subplot(1,2,2)
+            plt.imshow(joint_pred, cmap='gray')
             plt.show()
             plt.close()
+            
+    bar.finish()
 
-    return y_pred_results
+    return pred_results
 
 
 def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, train=False, device=None):
@@ -196,13 +215,13 @@ def save_history(train_accs, train_losses, val_accs, val_losses, out_path=None):
 def save_test_pred(results, data_path, out_path=None):
     """Save postprocessed test predictions"""
     print('Saving predicted images...')
-    prefix = data_path.rpartition('/')[2]
-    if out_path == None:
+    prefix = data_path.split('/')[-2]
+    if out_path is None:
         out_path = '../predictions/'
     os.makedirs(out_path, exist_ok=True)
 
-    for i, res in results:
-        fname = prefix + str(i)
+    for i, res in enumerate(results):
+        fname = prefix + '_' + str(i) + '.png'
         cv2.imwrite(out_path + fname, res)
 
 
@@ -214,7 +233,7 @@ if __name__ == '__main__':
     required.add_argument('-i', dest='root_path', type=str, required=True, action='store',
                         help='Root directory of input image datasets for training/testing')
     required.add_argument('--option', dest='option', type=str, required=True, action='store',
-                        help='Training / Testing option: (1). binary, (2). multi, (3). dwt, (4). test')
+                        help='Training option: (1). binary, (2). multi, (3). dwt')
 
     optional = parser.add_argument_group('optional arguments')
     optional.add_argument('-b', dest='batch_size', type=int, default=4, action='store',
@@ -229,6 +248,8 @@ if __name__ == '__main__':
                         help='Learning rate')
     optional.add_argument('-p', dest='patience_counter', type=int, default=30, action='store',
                         help='Patience counter for early-stopping or lr-tuning')
+    optional.add_argument('--test', dest='test', action='store_true',
+                        help='Whether perform prediction & postprocessing on the test set')
     optional.add_argument('--augment', dest='augment', action='store_true',
                         help='Whether to perform data augmentation in the current run')
     optional.add_argument('--early-stop', dest='early_stop', action='store_true',
@@ -278,7 +299,8 @@ if __name__ == '__main__':
     sigma = None
     if dist == 'saw': sigma = 3 if 'nuclei' in root_path else 1
 
-    if option == 'binary' or option == 'multi' or option == 'dwt':
+    # todo: (1). finish DWT implementation (2). Incorporate predictions with topo-loss results
+    if not args.test:
         train_accs, train_losses, val_accs, val_losses = train(root_path=root_path,
                                                                bs=batch_size,
                                                                lr=lr,
@@ -289,8 +311,7 @@ if __name__ == '__main__':
                                                                loss_fn=loss_fn,
                                                                alpha=alpha)
         save_history(train_accs, train_losses, val_accs, val_losses)
-    elif option == 'test':
-        pred_results = test(data_path=root_path, model=args.model)
-        save_test_pred(results=pred_results, data_path=root_path)
     else:
-        raise NotImplementedError('Unforeseen training/test option: {0}'.format(option))
+        pred_results = joint_pred(data_path=root_path, model_path=args.model, mask_option=option)
+        save_test_pred(results=pred_results, data_path=root_path)
+

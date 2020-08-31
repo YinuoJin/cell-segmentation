@@ -12,7 +12,7 @@ from utils import get_contour
 
 class Postprocessor():
     """Postprocess predicted matrix with 2 rounds of watershed segmentation"""
-    def __init__(self, x, y_pred, return_binary=True, return_contour=True):
+    def __init__(self, x, y_pred, seg_mask=True, return_binary=True, return_contour=True):
         """
         Parameters
         ----------
@@ -20,6 +20,8 @@ class Postprocessor():
             input image shape:(B=1, C=1, H, W)
         y_pred  : torch.Tensor
             predicted output matrix (softmax output) shape: (B=1, C=3, H, W)
+        seg_mask : bool
+            whether to apply "mask" regions for seeded watershed segmentation
         return_binary : bool
             return binarized segmentation prediction, if False each individual masks will be assigned with distinct integer
         return_contour : bool
@@ -29,21 +31,26 @@ class Postprocessor():
         self.y_pred = y_pred.detach().cpu().squeeze().numpy()
         self.return_binary = return_binary
         self.return_contour = return_contour
+        if seg_mask:
+            self.seg_region = np.bitwise_or(self.y_pred[1] > 0.5, self.y_pred[2] > 0.5)
+        else:
+            self.seg_region = None
         assert self.x.ndim == 2, 'Invalid dimension of input image {0}'.format(self.x.shape)
         assert self.y_pred.ndim == 3, 'Invalid dimension of predicted matrix {0}, only accepts batchsize=1'.format(self.y_pred.shape)
 
     @property
     def out(self):
-        seg_region = np.bitwise_or(self.y_pred[1] > 0.5, self.y_pred[2] > 0.5)
-        # binarize 3-channel prediction with class assignment to closest neighbor
-        mask_pred_binary = self.class_assignment(0.5, 0.5)
+        mask_pred_binary = self.class_assignment(0.5, 0.5)  # binarize 3-channel prediction
         
         # 2 rounds of watershed segmentation
         mask_pred_shape = self.watershed_shape(mask=mask_pred_binary, ft_size=8, thresh=0.1)
-        mask_pred_seed = self.watershed_seed(img=self.x, mask=mask_pred_shape, seg_region=seg_region, return_binary=self.return_binary)
+        mask_pred_seed = self.watershed_seed(img=self.x,
+                                             mask=mask_pred_shape,
+                                             seg_region=self.seg_region,
+                                             return_binary=self.return_binary)
         self._out = find_boundaries(mask_pred_seed) if self.return_contour else mask_pred_seed
         
-        return self._out
+        return self._out.astype(np.float)
         
     def class_assignment(self, t1, t2):
         """

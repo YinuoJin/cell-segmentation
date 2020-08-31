@@ -14,13 +14,13 @@
 ```
 usage: train.py [-h] -i ROOT_PATH --option OPTION [-b BATCH_SIZE] [-l LOSS]
                 [-n N_EPOCHS] [-m MODEL] [-r LR] [-p PATIENCE_COUNTER]
-                [--augment] [--early-stop] [--region-option]
+                [--test] [--augment] [--early-stop] [--region-option]
 
 Unet training options
 
 required arguments:
   -i ROOT_PATH         Root directory of input image datasets for training/testing
-  --option OPTION      Training / Testing option: (1). binary, (2). multi, (3). dwt, (4). test
+  --option OPTION      Training option: (1). binary, (2). multi, (3). dwt
 
 optional arguments:
   -b BATCH_SIZE        Batch size
@@ -30,6 +30,7 @@ optional arguments:
   -m MODEL             Saved model file
   -r LR                Learning rate
   -p PATIENCE_COUNTER  Patience counter for early-stopping or lr-tuning
+  --test               Whether perform prediction & postprocessing on the test set
   --augment            Whether to perform data augmentation in the current run
   --early-stop         Whether to perform early-stopping; If False, lr is halved when reaching each patience
   --region-option      Whether to use dice loss as the Region-based loss for boundary loss; If False, jaccard loss is used instead
