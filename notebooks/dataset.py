@@ -45,7 +45,6 @@ class ImageDataLoader(data.Dataset):
     def __getitem__(self, idx):
         return self.mat_frame[idx], self.mat_mask[idx]
 
-
 ###############################################
 #  Helper functions to calc distmap parallelly
 ###############################################
@@ -85,7 +84,7 @@ def saw_distmap_parallel(g):
 
         return g_skeleton_union, g_contour_union
 
-    eps=1e-5
+    eps = 1e-5
     sigma = 1
 
     g_binary = np.zeros((g.shape[1], g.shape[2]))
