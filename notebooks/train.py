@@ -352,7 +352,7 @@ if __name__ == '__main__':
                         help='Batch size')
     optional.add_argument('-l', dest='loss', type=str, default='bce', action='store',
                         help='Loss function\n  Options: (1).bce; (2).jaccard; (3).dice; (4).boundary'),
-    optional.add_argument('-n', dest='n_epochs',  type=int, default=150, action='store',
+    optional.add_argument('-n', dest='n_epochs',  type=int, default=50, action='store',
                         help='Total number of epoches for training')
     optional.add_argument('-m', dest='model_path', type=str, default='./model_checkpoint.pt', action='store',
                         help='Saved model file')
@@ -363,7 +363,7 @@ if __name__ == '__main__':
     optional.add_argument('--test', dest='test', action='store_true',
                         help='Whether to perform prediction & postprocessing on the test set')
     optional.add_argument('--joint-pred', dest='joint_pred', action='store_true',
-                        help='Wheter to perform joint prediction & postprocessing on the test set (with both nuclei & membrane marker channels)')
+                        help='Whether to perform joint prediction & postprocessing on the test set (with both nuclei & membrane marker channels)')
     optional.add_argument('--augment', dest='augment', action='store_true',
                         help='Whether to perform data augmentation in the current run')
     optional.add_argument('--early-stop', dest='early_stop', action='store_true',
