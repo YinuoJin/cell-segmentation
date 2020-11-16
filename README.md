@@ -27,7 +27,7 @@ required arguments:
 optional arguments:
   -o OUT_PATH          Directory to output file
   -a NET_OPTION        Model Architecture
-                        Options: (1).unet; (2).resnet; (3).convnet; (4). fpn
+                        Options: (1).unet; (2).residual blocks; (3). ConvLSTM expansions; (4). fpn
   -d DIST              Distance function for weighted loss
                         Options: (1).dist; (2).saw; (3).class; (4).boundary
   -b BATCH_SIZE        Batch size  [default: 4]
