@@ -55,10 +55,11 @@ class Postprocessor():
         return (mask > thresh).astype(np.float)
 
 
+"""
 class JointPostprocessor():
-    """Postprocess predictions with 2 rounds of watershed segmentation using both membrane & nuclei marked information"""
+    # Postprocess predictions with 2 rounds of watershed segmentation using both membrane & nuclei marked information
     def __init__(self, x, y_pred, p=0.2, seg_mask=True, return_binary=True, return_contour=True):
-        """
+        #
         Parameters
         ----------
         x : torch.Tensor
@@ -73,7 +74,8 @@ class JointPostprocessor():
             return binarized segmentation prediction, if False each individual masks will be assigned with distinct integer
         return_contour : bool
             return contour of the segmentation prediction
-        """
+        #
+        
         self.x = x.detach().cpu().squeeze().numpy()
         self.y_pred = y_pred.detach().cpu().squeeze(0).numpy()
         self.p = p
@@ -103,7 +105,7 @@ class JointPostprocessor():
         self._out = find_boundaries(mask_pred_seed, mode='outer') if self.return_contour else mask_pred_seed
         
         return self._out.astype(np.float)
-
+"""
 
 def label_masks(mask, return_contour=False):
     """Separate and label individual masks, remove internal holes"""

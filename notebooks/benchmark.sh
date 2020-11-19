@@ -30,7 +30,7 @@ output_path="../ds_bowl_benchmark/"
 # u-net with boundary loss
 #./train.py --option binary -i $input_path -o ../binary_results/unet_boundary/ -a unet -l boundary -d boundary -n 100 -p 20
 
-# resnet
+# u-net with residual blocks
 #echo "ResNet with SAW"
 #./train.py --option binary -i $input_path -o ${output_path}binary_results/resnet/ -a resnet -d dist -n 1 -p 20 --early-stop
 
@@ -53,10 +53,9 @@ echo "Baseline U-Net"
 echo "U-Net with SAW"
 ./train.py --option multi -i $input_path -o ${output_path}multi_results/unet_saw/ -a unet -r 0.001 -d saw -n 50 -p 20 --early-stop
 
-# resnet
+# u-net with residual blocks
 echo "ResNet with SAW"
 ./train.py --option multi -i $input_path -o ${output_path}multi_results/resnet/ -a resnet -r 0.001 -d saw -n 50 -p 20 --early-stop
-
 
 # resnet without saw
 #./train.py --option multi -i $input_path -o ../ds_bowl_benchmark/multi_results/resnet -a resnet -n 100 -p 20
@@ -67,7 +66,7 @@ echo "ResNet with SAW"
 # FPN
 echo "FPN with SAW"
 echo "----------------------------------------------"
-./train.py --option fpn -i $input_path -o ${output_path}multi_results/fpn/ -a fpn -r 0.001 -d saw -n 50 -p 20 --early-stop
+./train.py --option multi -i $input_path -o ${output_path}multi_results/fpn/ -a fpn -r 0.001 -d saw -n 50 -p 20 --early-stop
 
 
 

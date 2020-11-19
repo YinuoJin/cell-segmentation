@@ -22,7 +22,7 @@ Unet training options
 
 required arguments:
   -i ROOT_PATH         Root directory of input image datasets for training/testing
-  --option OPTION      Training option: (1). binary, (2). multi, (3). fpn
+  --option OPTION      Training option: (1). binary, (2). multi
 
 optional arguments:
   -o OUT_PATH          Directory to output file

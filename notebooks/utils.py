@@ -74,7 +74,7 @@ def hausdorff(y_true, y_pred):
         r2 = r2.detach().cpu().squeeze().numpy()
         if y_true.shape[1] == 1:  # 1-channel predictions
             hd = max(directed_hausdorff(r1, r2)[0], directed_hausdorff(r2, r1)[0])
-        else:  # 3-channel predictions
+        else:  # 3-channel predictions: convert to binary maps and calculate hausdorff distance
             r1_binary = class_assignment(r1)
             r2_binary = class_assignment(r2)
             hd = max(directed_hausdorff(r1_binary, r2_binary)[0], directed_hausdorff(r2_binary, r1_binary)[0])

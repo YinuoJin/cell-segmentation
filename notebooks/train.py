@@ -57,17 +57,6 @@ def train(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     net.to(device)
 
-    # debug: use multi-label (3) predictions with FPN (no multi-task learning)
-    """
-    if args.mask_option == 'fpn': # debug: try per-parameter learning rate
-        optimizer = torch.optim.Adam([
-            {'params': net.regress_net.parameters(), 'lr': 1e-4},
-            {'params': net.classify_net.parameters()}
-        ], lr=args.lr)
-    else:
-        optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
-    """
-
     optimizer = torch.optim.Adam(net.parameters(), lr=args.lr)
 
     train_accs, train_losses, val_accs, val_losses, train_dists, val_dists = [], [], [], [], [], []
@@ -185,44 +174,6 @@ def pred(data_path, model_path, net, mask_option, sigma=1, display=False, return
     return pred_results
 
 
-def joint_pred(data_path, model_path, net, mask_option, sigma=1, display=False, return_binary=True, return_contour=True):
-    """Joint prediction with nuclei prediction model, watershed over ecad images"""
-    pred_results = []
-    print('Loading datasets...')
-    print('- Test set {0}:'.format(data_path.split('/')[-2]))
-    dapi_dataloader, _ = load_data(data_path, None, 'dapi', 'dapi', mask_option='multi', sigma=sigma, batch_size=1, enhance=True)
-    ecad_dataloader, _ = load_data(data_path, None, 'ecad', 'ecad', mask_option='multi', sigma=sigma, batch_size=1)
-    # dapi_dataloader = data.DataLoader(dapi_dataset, batch_size=1)
-    # ecad_dataloader = data.DataLoader(ecad_dataset, batch_size=1)
-    
-    # Initialize network & training, transfer to GPU is available
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    nuclei_net = net
-    nuclei_net.load_state_dict(torch.load(model_path))
-    nuclei_net.to(device)
-    
-    print('Predicting test results...')
-    bar = ChargingBar('Test', max=len(dapi_dataloader), suffix='%(percent)d%%')
-    for dapi, ecad in zip(dapi_dataloader, ecad_dataloader):
-        bar.next()
-        dapi_img, ecad_img = dapi[0].float().to(device), ecad[0].float().to(device)
-        joint_pred = JointPostprocessor(ecad_img, nuclei_net(dapi_img), return_contour=return_contour, return_binary=return_binary).out
-        pred_results.append(joint_pred)
-
-        if display:
-            plt.figure(figsize=(20, 10))
-            plt.subplot(1,2,1)
-            plt.imshow(dapi_img.detach().cpu().squeeze().numpy(), cmap='gray')
-            plt.subplot(1,2,2)
-            plt.imshow(joint_pred, cmap='gray')
-            plt.show()
-            plt.close()
-            
-    bar.finish()
-
-    return pred_results
-
-
 def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, loss_name, option=None, train=False, device=None):
     """Single epoch training/validating"""
     torch.set_grad_enabled(train)
@@ -280,15 +231,13 @@ def run_one_epoch(model, dataloader, distmap, optimizer, loss_fn, loss_name, opt
             losses.append(loss.detach().cpu().numpy())
 
             if option == 'binary':
-                accuracy =  torch.mean(((output > 0.5) == (y > 0.5)).float()).detach().cpu().numpy()
-                dist = hausdorff(y, output)
+                accuracy = torch.mean(((output > 0.5) == (y > 0.5)).float()).detach().cpu().numpy()
+                distance = hausdorff(y, output)
             elif option == 'multi' or 'fpn':
                 # debug: measure hausdorff distance as accuracy
                 accuracy = calc_f1_score(y, output)
                 distance = hausdorff(y, output)
-            #else:  # 'fpn' option
-            #    accuracy = calc_fpn_score(y, output)
-            #    distance = hausdorff(y[:,1].unsqueeze(1), output[:,1].unsqueeze(1))
+
             accuracies.append(accuracy)
             distances.append(distance)
 
@@ -339,7 +288,7 @@ if __name__ == '__main__':
     required.add_argument('-i', dest='root_path', type=str, required=True, action='store',
                         help='Root directory of input image datasets for training/testing')
     required.add_argument('--option', dest='option', type=str, required=True, action='store',
-                        help='Training option: (1). binary, (2). multi, (3). fpn')
+                        help='Training option: (1). binary, (2). multi')
     
     optional = parser.add_argument_group('optional arguments')
     optional.add_argument('-o', dest='out_path', type=str, default='./', action='store',
@@ -376,7 +325,7 @@ if __name__ == '__main__':
 
     # Parameter initialization
     alpha = None  # parameter for boundary loss
-    sigma = None  # parameter for gaussian blur in distmap calculation
+    sigma = 3  # parameter for gaussian blur in weighted distmap calculation
     
     # data augmentation on training
     if args.augment:
@@ -389,10 +338,9 @@ if __name__ == '__main__':
     # Configure loss function type and distance option
     if args.loss == 'bce' and args.option == 'binary':
         loss_fn = ShapeBCELoss()
-    elif args.loss == 'bce' and (args.option == 'multi' or args.option == 'fpn'):
+    elif args.loss == 'bce' and args.option == 'multi':
         # loss_fn = ShapeBCELoss() if args.option == 'multi' else FPNLoss()
         loss_fn = ShapeBCELoss()
-        sigma = 3
     elif args.loss == 'jaccard':
         loss_fn = IoULoss()
     elif args.loss == 'dice':
@@ -407,7 +355,7 @@ if __name__ == '__main__':
     c_in = 1
     if args.option == 'binary':
         c_out = 1
-    elif args.option == 'multi' or 'fpn':
+    elif args.option == 'multi':
         c_out = 3
     else:
         raise NotImplementedError('Invalid mask option {0}, available options: binary; multi; fpn').format(args.option)
@@ -421,7 +369,7 @@ if __name__ == '__main__':
         print('Using ConvLSTMNet instead of normal U-net...')
         net = ConvRecUnet(c_in, c_out)
     elif args.net_option == 'fpn':
-        print('Using multitask FPN instead of U-net like architecture...')
+        print('Using FPN instead of normal U-net...')
         net = FPN(c_in, c_out, c_1=128)
     else:
         raise NotImplementedError('Invalid model architecture option {0}, available options: unet, resnet, lstm, fpn').format(args.net_option)

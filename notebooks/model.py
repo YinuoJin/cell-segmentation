@@ -76,15 +76,12 @@ class ResUnet(Unet):
 
 class FPN(ResUnet):
     """
-    Feature Pyramid Networks with ResNet contraction backbone, applicable heads to plugin-in:
-    (1). Inner distance --> serving as the watershed seeds
-    (2). Outer distance --> serving as the watershed contours
-    (3). Pixel-wise classification --> serving as the watershed mask region
+    Feature Pyramid Networks with Residual blocks
     """
-    def __init__(self, c_in=1, c_out=3, c_1=128, p=0.2):
+    def __init__(self, c_in=1, c_out=1, c_1=128, p=0.2):
         super(FPN, self).__init__(c_in, c_out, c_1, p)
         self.classify_net = PyramidExpansion(c_1*8, c_1//2, c_out, self.dropout_net)
-        self.out_net = nn.Softmax(dim=1)
+        self.out_net = self.activate_net(c_out)
 
     def forward(self, x):
         x, conv_output = self.contract_net(x)
@@ -92,23 +89,6 @@ class FPN(ResUnet):
         out = self.out_net(x_class)
 
         return out
-
-    """
-    def fpn_activate_net(self, x_outer, x_class):
-        #
-        #Multi-task learning ouput:
-        #(1). Inner distance
-        #(2). Outer distance
-        #(3). Pixel-wise classification
-        #
-        # debug: try outputs of multi-task training
-        out = torch.cat((F.relu(x_outer, inplace=False), F.relu(x_outer, inplace=False)), axis=1)
-
-        # out = torch.cat((F.relu(x_outer, inplace=False), torch.sigmoid(x_class)), axis=1)
-
-        return out
-    """
-
 
 class NormVectorActivation(nn.Module):
     """
