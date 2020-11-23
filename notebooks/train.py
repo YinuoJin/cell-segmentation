@@ -12,7 +12,7 @@ from progress.bar import ChargingBar
 from torch.utils import data
 from dataset import load_data, augmentation
 from model import Unet, ConvRecUnet, ResUnet, FPN
-from postprocessing import Postprocessor, JointPostprocessor, class_assignment
+from postprocessing import Postprocessor, class_assignment
 from utils import hausdorff, calc_accuracy_score, calc_f1_score
 from utils import IoULoss, SoftDiceLoss, SurfaceLoss, ShapeBCELoss
 
@@ -25,6 +25,7 @@ class Arguments:
         self.root_path = kwargs['root_path']
         self.out_path = kwargs['out_path']
         self.model_path = kwargs['model_path']
+        self.image_type = kwargs['image_type']
         self.early_stop = kwargs['early_stop']
         self.net = kwargs['net']
         self.n_epochs = kwargs['n_epochs']
@@ -45,13 +46,25 @@ def train(args):
     net = args.net
     print('Loading datasets...')
     print('- Training set:')
-    train_dataloader, train_distmap = load_data(args.root_path, args.model_path, 'train_frames', 'train_masks',
-                                             mask_option=args.mask_option, sigma=args.sigma, batch_size=args.bs,
-                                             return_dist=args.dist)
+    train_dataloader, train_distmap = load_data(root_path=args.root_path,
+                                                model_path=args.model_path,
+                                                image_type=args.image_type,
+                                                frame='train_frames',
+                                                mask='train_masks',
+                                                mask_option=args.mask_option,
+                                                sigma=args.sigma,
+                                                batch_size=args.bs,
+                                                return_dist=args.dist)
     print('- Validation set:')
-    val_dataloader, val_distmap = load_data(args.root_path, args.model_path, 'val_frames', 'val_masks',
-                                         mask_option=args.mask_option, sigma=args.sigma, batch_size=args.bs,
-                                         return_dist=args.dist)
+    val_dataloader, val_distmap = load_data(root_path=args.root_path,
+                                            model_path=args.model_path,
+                                            image_type=args.image_type,
+                                            frame='val_frames',
+                                            mask='val_masks',
+                                            mask_option=args.mask_option,
+                                            sigma=args.sigma,
+                                            batch_size=args.bs,
+                                            return_dist=args.dist)
 
     # Initialize network & training, transfer to GPU is available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -289,6 +302,8 @@ if __name__ == '__main__':
                         help='Root directory of input image datasets for training/testing')
     required.add_argument('--option', dest='option', type=str, required=True, action='store',
                         help='Training option: (1). binary, (2). multi')
+    required.add_argument('--image-type', dest='image_type', type=str, default='nuclei', required=True, action='store',
+                         help='Image type: (1). nuclei, (2). mask')
     
     optional = parser.add_argument_group('optional arguments')
     optional.add_argument('-o', dest='out_path', type=str, default='./', action='store',
@@ -378,6 +393,7 @@ if __name__ == '__main__':
         root_path=args.root_path,
         out_path=args.out_path,
         model_path=args.model_path,
+        image_type=args.image_type,
         early_stop=args.early_stop,
         net=net,
         n_epochs=args.n_epochs,

@@ -19,9 +19,9 @@ class Postprocessor():
         pred : torch.Tensor
             predicted output matrix (softmax output) shape: (B=1, C=3, H, W)
         p : float
-            cutoff ratio of concave complementary area to convex hull area for shape-based watershed
+            cutoff ratio of concave complementary area to convex hull area
         return_binary : bool
-            return binarized segmentation prediction, if False each individual masks will be assigned with distinct integer
+            return binarized segmentation prediction
         return_contour : bool
             return contour of the segmentation prediction
         """
@@ -54,58 +54,6 @@ class Postprocessor():
     def _binarize(self, mask, thresh=0.5):
         return (mask > thresh).astype(np.float)
 
-
-"""
-class JointPostprocessor():
-    # Postprocess predictions with 2 rounds of watershed segmentation using both membrane & nuclei marked information
-    def __init__(self, x, y_pred, p=0.2, seg_mask=True, return_binary=True, return_contour=True):
-        #
-        Parameters
-        ----------
-        x : torch.Tensor
-            input image shape:(B=1, C=1, H, W)
-        y_pred  : torch.Tensor
-            predicted output matrix (softmax output) shape: (B=1, C=3, H, W)
-        p : float
-            cutoff ratio of concave complementary area to convex hull area for shape-based watershed
-        seg_mask : bool
-            whether to apply "mask" regions for seeded watershed segmentation
-        return_binary : bool
-            return binarized segmentation prediction, if False each individual masks will be assigned with distinct integer
-        return_contour : bool
-            return contour of the segmentation prediction
-        #
-        
-        self.x = x.detach().cpu().squeeze().numpy()
-        self.y_pred = y_pred.detach().cpu().squeeze(0).numpy()
-        self.p = p
-        self.return_binary = return_binary
-        self.return_contour = return_contour
-        if seg_mask:
-            self.seg_region = np.bitwise_or(self.y_pred[1] > 0.5, self.y_pred[2] > 0.5)
-        else:
-            self.seg_region = None
-        assert self.x.ndim == 2, 'Invalid dimension of input image {0}'.format(self.x.shape)
-        assert self.y_pred.ndim == 3, 'Invalid dimension of predicted matrix {0}, only accepts batchsize=1'.format(self.y_pred.shape)
-
-    @property
-    def out(self):
-        mask_pred_binary = class_assignment(self.y_pred, 0.5, 0.5)  # binarize 3-channel prediction
-
-        # debug: morphological operations to remove inner "circles"
-        mask_pred_binary = ndi.morphology.binary_fill_holes(closing(mask_pred_binary, square(3)))
-
-        # 2 rounds of watershed segmentation
-        mask_pred_shape = watershed_shape(mask=mask_pred_binary, ft_size=4, thresh=self.p)
-        mask_pred_seed = watershed_seed(img=self.x,
-                                        mask=mask_pred_shape,
-                                        seg_region=self.seg_region,
-                                        return_binary=self.return_binary)
-
-        self._out = find_boundaries(mask_pred_seed, mode='outer') if self.return_contour else mask_pred_seed
-        
-        return self._out.astype(np.float)
-"""
 
 def label_masks(mask, return_contour=False):
     """Separate and label individual masks, remove internal holes"""
@@ -142,7 +90,7 @@ def watershed_shape(mask, mask_labels, thresh=0.1):
     ft_size : int
         FIlter size for watershed markers detection
     thresh : float
-        threshold value for "Convex-like" mask determination via solidity
+        threshold for "Convex-like" mask via solidity
         solidity = Area(g) / Area(convex(g))
     
     Returns
@@ -206,7 +154,7 @@ def watershed_seed(img, mask, seg_region=None, min_area=5, sigma=-1, return_bina
     seg_region : np.ndarray
         candidate regions for watershed segmentation, shape=(h, w)
     min_area : int
-        minimum area of any independent mask to be considered as a candidate for seeded watershed
+        minimum area of any independent mask to be considered for seeded watershed
     sigma : float
         parameterfor gaussian blur
     return_binary : bool

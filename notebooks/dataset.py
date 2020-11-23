@@ -251,7 +251,14 @@ class ImagePreprocessor():
         Preprocessed image, shape=[1, H, W]
     """
 
-    def __init__(self, img, h, w, gamma=0.5, limit=5.0, grid_size=(16, 16), dilate=False, enhance=False):
+    def __init__(self, img, h, w,
+                 gamma=0.5,
+                 limit=5.0,
+                 grid_size=(16, 16),
+                 adjust_gamma=False,
+                 dilate=False,
+                 enhance=False,
+                 cutoff_perc=False):
         """
         Parameters
         ----------
@@ -263,28 +270,37 @@ class ImagePreprocessor():
             contrast limit value for AHE
         grid_size : tuple of int
             sliding-window size for AHE
+        adjust_gamma : bool
+            Whether to perform gamma adjustment (contrast modification)
         dilate : bool
             Whether to perform background correction via g - dilate(g)
         enhance : bool
             Whether to perform Adaptive Histogram Equalization (AHE)
+        cutoff_perc : bool
+            Whether to threshold the a% lowest pixels (to 0) and b% highest pixels (to 1)
         """
         self.gamma = gamma
         self.limit = limit
         self.height = h
         self.width = w
         self.grid_size = grid_size
+        self.adjust_gamma = adjust_gamma
         self.dilate = dilate
         self.enhance = enhance
+        self.cutoff_perc = cutoff_perc
         self.img = resize(img, (h, w))
 
     def _preprocess(self):
         img_out = self.img.copy()
-        if is_low_contrast(self.img):
+        # img_out = rescale(img_out)
+        if is_low_contrast(self.img) or self.adjust_gamma:
             img_out = self._gamma_adjustment(self.img, self.gamma)
         if self.dilate:
             img_out = self._background_correction(img_out)
         if self.enhance:
             img_out = self._ahe(img_out, self.limit, self.grid_size)
+        if self.cutoff_perc:
+            img_out = self._cutoff_percentile(img_out)
         img_out = rescale(img_out)
 
         return np.expand_dims(img_out, axis=0)
@@ -301,9 +317,14 @@ class ImagePreprocessor():
         return adjust_gamma(img, gamma)
 
     @staticmethod
-    def _background_correction(img, sigma=2):
-        """Remove background noises via dilation"""
-        return ndi.gaussian_filter(img, sigma=sigma)
+    def _cutoff_percentile(img, low_perc=5, upper_perc=95):
+        lower_bound, upper_bound = np.percentile(img, low_perc), np.percentile(img, upper_perc)
+        min_intensity, max_intensity = img.min(), img.max()
+        img[img < lower_bound] = min_intensity
+        img[img > upper_bound] = max_intensity
+
+        return img
+
 
     @staticmethod
     def _ahe(img, limit, grid_size):
@@ -336,29 +357,35 @@ class MaskPreprocessor():
             (3). attached border of clotting cells
     """
 
-    def __init__(self, img, h, w, c, option='multi', erode_mask=True, thresh_option='mean'):
+    def __init__(self, img, h, w, c, image_type='nuclei', option='multi', erode_mask=True, thresh_option='mean'):
         """
         Parameters
         ----------
         img : np.ndarray
-            Ground truth masks: shape=[H, W, C=3] (if from from annotated fluroscence datasets) or [H, W, C=1]
+            Ground truth masks: shape=[H, W, C=3] or [H, W, C=1]
+        image_type : str
+            Specification of image type for different 3-channel
+            augmentation preprocessing for nuclei / membrane
         erode_mask : bool
-            Whether to further take 1-pixel radial erosions from the ground-truth mask
+            Whether to further take 1-pixel radial erosions
+            from the ground-truth mask
         thresh : float
-            Global threshold value to binarize mask (in case that the given mask isn't fully binarized)
+            Global threshold value to binarize mask
+            in case that the given mask isn't fully binarized
         """
         self.height = h
         self.width = w
         self.c_in = c
         self.option = option
         self.img = resize(img, (h, w, c))
+        self.img_type = image_type
         self.erode_mask = erode_mask
         self.thresh_option = thresh_option
 
     def _preprocess(self):
         if self.option == 'binary':
             img_out = self._binary_mask()
-        elif self.option == 'multi' or 'fpn':
+        elif self.option == 'multi':
             img_out = self._multi_mask()
         else:
             raise NotImplementedError("Unrecognized mask option: {0}".format(self.option))
@@ -383,7 +410,14 @@ class MaskPreprocessor():
             img_binary = self._binarize(self.img.squeeze(), erode=self.erode_mask, thresh_option=self.thresh_option)
         else:
             img_binary = self._binarize_multi_channel(self.img.transpose((2, 0, 1)))
-        img_processed = self._label_augment(img_binary)
+
+        # Perform different third-label augmentation for nuclei and membrane masks
+        if self.img_type == 'nujclei':
+            img_processed = self._label_augment(img_binary)
+        else:
+            img_binary = self._close_border(img_binary)
+            img_processed = self._fill_contour(img_binary)
+
         img_out = self._one_hot_encoding(img_processed, ndim=3)
 
         return img_out
@@ -391,7 +425,6 @@ class MaskPreprocessor():
     @property
     def out(self):
         self._out = self._preprocess()
-        #assert self._out.ndim == 3, "Invalid output mask dimension {0}".format(self._out.ndim)
         if self.option == 'binary':
             assert self._out.shape[0] == 1, "Invalid channel dimension {0} for binary mask".format(self._out.shape[0])
         elif self.option == 'multi':
@@ -412,9 +445,8 @@ class MaskPreprocessor():
         return g_aug
 
     @staticmethod
-    def _fill_boundary_mask(g):
-        """Create filled-in masks for masks highlighting only boundary regions"""
-        g = dilation(g, disk(1))  # enhance cell borders
+    def _fill_contour(g):
+        """Fill in colors for masks highlighting only boundary regions"""
         g_tmp_filled = ndi.binary_fill_holes(g)
         is_boundary = np.bitwise_and(g_tmp_filled == 1.0, g == 1.0)
 
@@ -423,6 +455,31 @@ class MaskPreprocessor():
         g_filled[is_boundary] = 2.0
 
         return g_filled
+
+    @staticmethod
+    def _close_border(g, limit=32):
+        """Close loops with 'half' cells at the edge of the image"""
+        upper = np.where(g[0, :] == 1)[0]
+        for i in range(len(upper) - 1):
+            if upper[i + 1] - upper[i] < limit:
+                g[0, upper[i]:upper[i + 1]] = 1
+
+        lower = np.where(g[-1, :] == 1)[0]
+        for i in range(len(lower) - 1):
+            if lower[i + 1] - lower[i] < limit:
+                g[-1, lower[i]:lower[i + 1]] = 1
+
+        left = np.where(g[:, 0] == 1)[0]
+        for i in range(len(left) - 1):
+            if left[i + 1] - left[i] < limit:
+                g[left[i]:left[i + 1], 0] = 1
+
+        right = np.where(g[:, -1] == 1)[0]
+        for i in range(len(right) - 1):
+            if right[i + 1] - right[i] < limit:
+                g[right[i]:right[i + 1], -1] = 1
+
+        return g
 
     @staticmethod
     def _binarize(g_orig, erode=False, thresh_option='mean'):
@@ -506,25 +563,73 @@ def load_data(root_path,
               model_path,
               frame,
               mask,
+              image_type='nuclei',
               n_channel_frame=1,
               mask_option='multi',
               height=256,
               width=256,
               sigma=None,
               batch_size=1,
+              gamma=0.5,
               limit=None,
+              adjust_gamma=False,
               enhance=False,
               dilate=False,
-              erode_mask=True,
+              cutoff_perc=False,
+              erode_mask=False,
               thresh_option='mean',
               return_dist=None):
-    """Load images from directory, preprocess & initialize dataloader object"""
+    """
+    Load images from directory, preprocess & initialize dataloader object
+
+    Parameters
+    ----------
+    n_channel_frame : int
+        Number of channels for each input image (default: 1)
+    image_type : str
+        Specification of input image type. Options
+         - nuclei
+         - membrane
+    mask_option : str
+        Mask output format:
+        'binary' - 1-channel mask,
+        'multi'  - 3-channel mask
+    sigma : float
+        Parameter of gaussian blur parameter for distance map calculation
+        (if applying pixel-wise weight maps during loss calculation)
+    gamma : float
+        Parameter of gamma adjustment parameters for image preprocessing
+    limit : float
+        Parameter of adaptive histogram equalization for image preprocessing
+    adjust_gamma : bool
+        Whether to perform gamma adjustment on input images
+    enhance : bool
+        Whether to enhance input images by performing
+        adaptive histogram equalization (AHE)
+    dilate : bool
+        Whether to perform gaussian smoothing on input images
+    cutoff_perc : bool
+        Whether to threshold the a% lowest pixels (to 0)
+        and b% highest pixels (to 1) on input images
+    erode_mask : bool
+        Whether to take 1-pixel erosions on ground-truth masks
+        (enhance boundary pixels for adjacent cells)
+    thresh_option : string
+        Threshold option for binarizing output mask preedictions
+    return_distance : string
+        The option to specify returned distance map;
+        Available options: saw, dist, boundary.
+
+    Returns
+    -------
+    dataloader, distmap : tuple of dataloader of:
+        [(image, mask),...] & the corresponding distance-map w.r.t each mask
+
+    """
     # Configure num_channels of ground-truth masks
     if mask_option == 'binary':
         n_channel_mask = 1
     elif mask_option == 'multi':
-        n_channel_mask = 3
-    elif mask_option == 'fpn': # debug: try multi-label (3) predictions only
         n_channel_mask = 3
     else:
         raise NotImplementedError('Unforseen mask option {0}'.format(mask_option))
@@ -538,7 +643,6 @@ def load_data(root_path,
     assert return_dist is None or \
            return_dist == 'boundary' or \
            return_dist == 'dist' or \
-           return_dist == 'class' or \
            return_dist == 'saw', "Unrecognized return_dist option {0}".format(return_dist)
 
     # Read raw images of frames & masks, store them in np.ndarray
@@ -552,9 +656,13 @@ def load_data(root_path,
                                                 os.path.join(mask_path, mask_name),
                                                 h=height,
                                                 w=width,
+                                                image_type=image_type,
+                                                gamma=gamma,
                                                 limit=limit,
+                                                adjust_gamma=adjust_gamma,
                                                 enhance=enhance,
                                                 dilate=dilate,
+                                                cutoff_perc=cutoff_perc,
                                                 erode_mask=erode_mask,
                                                 thresh_option=thresh_option,
                                                 mask_option=mask_option)
@@ -568,8 +676,17 @@ def load_data(root_path,
     return dataloader, distset
 
 
-def read_images(name1, name2, h, w, limit=None, enhance=False, dilate=False,
-                erode_mask=True, thresh_option='mean', mask_option='multi'):
+def read_images(name1, name2, h, w,
+                image_type='nuclei',
+                gamma=0.5,
+                limit=None,
+                adjust_gamma=False,
+                enhance=False,
+                dilate=False,
+                cutoff_perc=False,
+                erode_mask=False,
+                thresh_option='mean',
+                mask_option='multi'):
     """Read and preprocess the images"""
     img_frame_raw = crop_img(cv2.imread(name1, cv2.IMREAD_COLOR))
     img_frame_gray = cv2.cvtColor(img_frame_raw, cv2.COLOR_BGR2GRAY)  # Convert raw image to grayscale
@@ -578,9 +695,16 @@ def read_images(name1, name2, h, w, limit=None, enhance=False, dilate=False,
     # Image & mask preprocessing
     if limit is None:
         limit = 1.0 if 'svg' in name1 else 5.0
-    img_frame = ImagePreprocessor(img_frame_gray, h, w, limit=limit, dilate=dilate, enhance=enhance).out
+    img_frame = ImagePreprocessor(img_frame_gray, h, w,
+                                  gamma=gamma,
+                                  limit=limit,
+                                  adjust_gamma=adjust_gamma,
+                                  dilate=dilate,
+                                  enhance=enhance,
+                                  cutoff_perc=cutoff_perc).out
     n_channel_mask_resize = 3 if 'svg' in name2 else 1
     img_mask = MaskPreprocessor(img_mask_raw, h, w,
+                                image_type=image_type,
                                 c=n_channel_mask_resize,
                                 erode_mask=erode_mask,
                                 thresh_option=thresh_option,

@@ -141,7 +141,7 @@ def calc_fpn_score(y_true, y_pred):
 
 def plot_img_3d_distribution(img, figsize=(8, 6)):
     """
-    Plot 3D value distribution of the givne image,
+    Plot 3D value distribution of the given image,
     assume image has shape [C, H, W]"""
     img = img.transpose((1, 2, 0))  # change image order to [H, W, C]
     height, width = img.shape[0], img.shape[1]
