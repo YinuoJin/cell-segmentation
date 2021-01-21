@@ -130,6 +130,7 @@ def pred(data_path, model_path, net, mask_option, sigma=1, display=False, return
         ----------
         t1 : float
             threshold 1 - cutoff for class 0 & 1 assignment (background & cell foreground)
+
         t2 : float
             threshold 2 - cutoff for class 2 asssignment (attaching border)
         """

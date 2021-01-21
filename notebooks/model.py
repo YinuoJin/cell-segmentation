@@ -363,3 +363,8 @@ class ResDoubleConv2d(nn.Module):
         return out
 
 
+#---------------------------------
+#  ResNet models
+#---------------------------------
+
+

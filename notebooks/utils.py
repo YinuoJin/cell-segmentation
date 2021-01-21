@@ -45,9 +45,12 @@ def class_assignment(mask, t1=0.5, t2=0.5):
     Parameters
     ----------
     t1 : float
-        threshold 1 - cutoff for class 0 & 1 assignment (background & cell foreground)
+        threshold 1 - cutoff for class 0 & 1 assignment
+        (background & cell foreground)
+
     t2 : float
-        threshold 2 - cutoff for class 2 asssignment (attaching border)
+        threshold 2 - cutoff for class 2 asssignment
+        (attaching border)
     """
     n_channels, h, w = mask.shape
     output = np.zeros((h, w))
@@ -207,6 +210,7 @@ class IoULoss(nn.Module):
         ----------
         y_true : torch.Tensor
             ground truth matrix, shape: [B, C, H, W], C = 1
+
         y_pred : torch.Tensor
             predicted matrix, shape: [B, C, H, W], C = 1
         """
@@ -236,6 +240,7 @@ class SoftDiceLoss(nn.Module):
         ----------
         y_true : torch.Tensor
             ground truth matrix, shape: [B, C, H, W], C = 1
+
         y_pred : torch.Tensor
             predicted matrix, shape: [B, C, H, W], C = 1
         """
@@ -260,9 +265,12 @@ class SurfaceLoss(nn.Module):
         Parameters
         ----------
         alpha : float
-            rate of Region-based loss w.r.t to Boundary-based loss: L = α * L_r + (1 - α) * L_b
+            rate of Region-based loss w.r.t to Boundary-based loss:
+            L = α * L_r + (1 - α) * L_b
+
         dice : bool
-            whether to use Soft Dice loss as region-based loss (use Jaccard loss if False)
+            whether to use Soft Dice loss as region-based loss
+            (use Jaccard loss if False)
         """
         super(SurfaceLoss, self).__init__()
         self.alpha = alpha
@@ -274,11 +282,16 @@ class SurfaceLoss(nn.Module):
         Parameters
         ----------
         y_true : torch.Tensor
-            ground truth matrix, shape: [B, C, H, W], C = 1
+            ground truth matrix
+            shape: [B, C, H, W], C = 1
+
         y_pred : torch.Tensor
-            predicted matrix, shape: [B, C, H, W], C = 1
+            predicted matrix
+            shape: [B, C, H, W], C = 1
+
         theta_true : torch.Tensor
-            level set representation of ground-truth boundary, shape: [B, C, H, W], C = 1
+            level set representation of ground-truth boundary
+            shape: [B, C, H, W], C = 1
         """
         boundary_dist = torch.einsum('bchw,bchw->bchw', y_pred, theta_true)
         boundary_loss = boundary_dist.mean()
@@ -299,11 +312,16 @@ class ShapeBCELoss(nn.Module):
         Parameters
         ----------
         y_true : torch.Tensor
-            ground truth matrix (one-hot encoded), shape: [B, C, H, W], C = 3
+            ground truth matrix (one-hot encoded)
+            shape: [B, C, H, W], C = 3
+
         y_pred : torch.Tensor
-            predicted matrix (softmax output), shape: [B, C, H, W], C = 3
+            predicted matrix (softmax output)
+            shape: [B, C, H, W], C = 3
+
         weight : torch.Tensor
-            Shape-awared weights of each pixel, highlighting adjacent cell borders, smaller & concave cells
+            Shape-awared weights of each pixel
+            highlighting adjacent cell borders, smaller & concave cells
         """
         return F.binary_cross_entropy_with_logits(y_pred, y_true, weight)
 

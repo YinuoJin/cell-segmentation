@@ -264,18 +264,25 @@ class ImagePreprocessor():
         ----------
         img : np.ndarray
             Raw image shape=[H, W]
+
         gamma : np.float
             parameter for gamma adjustment
+
         limit : np.float
             contrast limit value for AHE
+
         grid_size : tuple of int
             sliding-window size for AHE
+
         adjust_gamma : bool
             Whether to perform gamma adjustment (contrast modification)
+
         dilate : bool
             Whether to perform background correction via g - dilate(g)
+
         enhance : bool
             Whether to perform Adaptive Histogram Equalization (AHE)
+
         cutoff_perc : bool
             Whether to threshold the a% lowest pixels (to 0) and b% highest pixels (to 1)
         """
@@ -349,6 +356,7 @@ class MaskPreprocessor():
        - binary:
            1-channel binary ground-truth mask, shape=[1, H, W]
            values: 0 = background, 1 = foreground
+
        - multi:
            3-channel ground-truth mask, shape=[3, H, W]
            Output channels representing 3 classes:
@@ -363,12 +371,15 @@ class MaskPreprocessor():
         ----------
         img : np.ndarray
             Ground truth masks: shape=[H, W, C=3] or [H, W, C=1]
+
         image_type : str
             Specification of image type for different 3-channel
             augmentation preprocessing for nuclei / membrane
+
         erode_mask : bool
             Whether to further take 1-pixel radial erosions
             from the ground-truth mask
+
         thresh : float
             Global threshold value to binarize mask
             in case that the given mask isn't fully binarized
@@ -586,36 +597,48 @@ def load_data(root_path,
     ----------
     n_channel_frame : int
         Number of channels for each input image (default: 1)
+
     image_type : str
         Specification of input image type. Options
          - nuclei
          - membrane
+
     mask_option : str
         Mask output format:
         'binary' - 1-channel mask,
         'multi'  - 3-channel mask
+
     sigma : float
         Parameter of gaussian blur parameter for distance map calculation
         (if applying pixel-wise weight maps during loss calculation)
+
     gamma : float
         Parameter of gamma adjustment parameters for image preprocessing
+
     limit : float
         Parameter of adaptive histogram equalization for image preprocessing
+
     adjust_gamma : bool
         Whether to perform gamma adjustment on input images
+
     enhance : bool
         Whether to enhance input images by performing
         adaptive histogram equalization (AHE)
+
     dilate : bool
         Whether to perform gaussian smoothing on input images
+
     cutoff_perc : bool
         Whether to threshold the a% lowest pixels (to 0)
         and b% highest pixels (to 1) on input images
+
     erode_mask : bool
         Whether to take 1-pixel erosions on ground-truth masks
         (enhance boundary pixels for adjacent cells)
+
     thresh_option : string
         Threshold option for binarizing output mask preedictions
+
     return_distance : string
         The option to specify returned distance map;
         Available options: saw, dist, boundary.

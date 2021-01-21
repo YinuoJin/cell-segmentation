@@ -12,16 +12,20 @@ from utils import get_contour, class_assignment
 
 class Postprocessor():
     """Postprocess predictions with shape-based watershed segmentation"""
+
     def __init__(self, pred, p=0.9, return_binary=True, return_contour=True):
         """
         Parameters
         ----------
         pred : torch.Tensor
             predicted output matrix (softmax output) shape: (B=1, C=3, H, W)
+
         p : float
             cutoff ratio of concave complementary area to convex hull area
+
         return_binary : bool
             return binarized segmentation prediction
+
         return_contour : bool
             return contour of the segmentation prediction
         """
@@ -87,8 +91,10 @@ def watershed_shape(mask, mask_labels, thresh=0.1):
     ----------
     mask : np.ndarray
         predicted mask, shape=(h, w)
+
     ft_size : int
         FIlter size for watershed markers detection
+
     thresh : float
         threshold for "Convex-like" mask via solidity
         solidity = Area(g) / Area(convex(g))
@@ -151,12 +157,16 @@ def watershed_seed(img, mask, seg_region=None, min_area=5, sigma=-1, return_bina
     ----------
     mask : np.ndarray
         predicted mask, shape=(h, w)
+
     seg_region : np.ndarray
         candidate regions for watershed segmentation, shape=(h, w)
+
     min_area : int
         minimum area of any independent mask to be considered for seeded watershed
+
     sigma : float
         parameterfor gaussian blur
+
     return_binary : bool
         whether to return binarized prediction mask
 
