@@ -8,6 +8,7 @@ import time
 import Augmentor
 import multiprocessing
 import gc
+import h5py
 
 from progress.bar import ChargingBar
 from torch.utils import data
@@ -22,6 +23,39 @@ from skimage.segmentation import find_boundaries
 
 from utils import get_contour
 from model import Unet
+
+
+class ImsReader():
+    """Retrieve numpy array from IMS image files"""
+
+    def __init__(self, fname, res=0, tp=0):
+        self.ims = h5py.File(fname, 'r')
+        self.res = 'ResolutionLevel {}'.format(res)
+        self.tp = 'TimePoint {}'.format(tp)
+
+    def to_numpy(self, channel):
+        """Return the 3-dimensional [C,H,W] np.array of a particular channel of the image"""
+        ch_name = 'Channel {}'.format(channel)
+        img = self.ims['DataSet'][self.res][self.tp][ch_name]['Data'][()]
+        img_rescaled = self._rescale_3d(img)
+
+        return img_rescaled
+
+    def num_channels(self):
+        """Count total number of separate channels"""
+        return len(self.ims['DataSet'][self.res][self.tp])
+
+    def _rescale_3d(self, img):
+        """Rescale intensity per z-axis"""
+        img_rescaled = []
+        for i, layer in enumerate(img):
+            img_rescaled.append(self._rescale(layer))
+
+        return np.array(img_rescaled)
+
+    def _rescale(self, img, eps=1e-6):
+        """Rescale a 2-dimension image to (0, 1)"""
+        return (img - img.min()) / (img.max() - img.min() + eps)
 
 
 class ImageDataLoader(data.Dataset):
@@ -45,9 +79,11 @@ class ImageDataLoader(data.Dataset):
     def __getitem__(self, idx):
         return self.mat_frame[idx], self.mat_mask[idx]
 
+
 ###############################################
 #  Helper functions to calc distmap parallelly
 ###############################################
+
 
 def contour_distmap_parallel(mask):
     neg_mask = 1.0 - mask
@@ -150,16 +186,6 @@ class DistmapDataLoader(data.Dataset):
         """
         # todo: generalize to multi-class classification
         print('Calculating contour distance maps...')
-        """
-        distmap = np.zeros_like(masks)
-        bar = ChargingBar('Loading', max=len(masks), suffix='%(percent)d%%')
-        for i, mask in enumerate(masks):
-            bar.next()
-            neg_mask = 1.0 - mask
-            dist = distance_transform_edt(neg_mask) * neg_mask - (distance_transform_edt(mask) - 1) * mask
-            distmap[i, :, :] = dist
-        bar.finish()
-        """
         distmap = self.pool.map(contour_distmap_parallel, masks)
         self.pool.close()
         self.pool.join()
@@ -216,6 +242,7 @@ class DistmapDataLoader(data.Dataset):
         masks : array-like
             A 4D array of shape (n_images, channel=3, image_height, image_width),
             where each slice of the matrix along the 0th axis represents one binary mask.
+
         sigma : int
             Standard deviation value for weight-map gaussian filtering
             
@@ -233,6 +260,11 @@ class DistmapDataLoader(data.Dataset):
         weights = np.expand_dims(np.stack(weights, axis=0), axis=1)
 
         return weights
+
+
+###############################################
+#  Image & Mask preprocessing classes
+###############################################
 
 
 class ImagePreprocessor():
@@ -570,8 +602,58 @@ class MaskPreprocessor():
         return mask_indep_labels, contours if return_contour else mask_indep_labels
 
 
+###############################################
+#  Load images / frames
+###############################################
+
+
+def load_ims(path, res=0, channel=None, tp=0):
+    """
+    Load 3D images from ims files in the directory
+
+    Parameters
+    ----------
+    path : str
+        Directory to ims files
+
+    res : int
+        Image resolution level from ims file
+        (0: 2048*2048, 1: 1024*1024, 2: 512*512, 3: 256*256)
+
+    channel : int
+        Stained channel to import
+        (default: None - import image from all channels)
+
+    tp : int
+        Time point for loaded images
+
+    Returns
+    -------
+    output : dict or list
+        Dictionary of (channel, list of 3D np.array) if load all channels
+        List of 3D np.array if load specific channel
+    """
+    assert os.path.exists(path), "Invalid input path {0}".format(path)
+    fnames = [os.path.join(path, name) for name in sorted(os.listdir(path))]
+    if channel is None:
+        print('Loading images from all channels...')
+        n_channels = ImsReader(fname=fnames[0]).num_channels()
+        channels = np.arange(n_channels)
+        output = {i: [] for i in range(n_channels)}
+    else:
+        print('Loading images from channel {}'.format(channel))
+        channels = [channel]
+        output = {channel: []}
+
+    for name in fnames:
+        ims = ImsReader(fname=name, res=res, tp=tp)
+        for ch in channels:
+            output[ch].append(ims.to_numpy(ch))
+
+    return output if channel is None else output[channel]
+
+
 def load_data(root_path,
-              model_path,
               frame,
               mask,
               image_type='nuclei',
@@ -591,7 +673,7 @@ def load_data(root_path,
               thresh_option='mean',
               return_dist=None):
     """
-    Load images from directory, preprocess & initialize dataloader object
+    Load images from directory, preprocess & initialize into dataloader object
 
     Parameters
     ----------
@@ -696,7 +778,7 @@ def load_data(root_path,
     dataloader = data.DataLoader(dataset, batch_size=batch_size)
     distset = data.DataLoader(distset, batch_size=batch_size)
 
-    return dataloader, distset
+    return dataloader if return_dist is None else (dataloader, distset)
 
 
 def read_images(name1, name2, h, w,

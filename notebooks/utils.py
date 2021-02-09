@@ -38,6 +38,19 @@ def get_contour(img, external=True, draw=False):
     return contours, img_processed
 
 
+def recover_3d(file_name):
+    """
+    Recover 3d np.array from saved txt file
+
+    input dim: (C, HxW) --> output dim: (C, H, W) (assume H = W)
+    """
+    img = np.loadtxt(file_name).astype(np.float)
+    n_layers, npos = img.shape
+    img = img.reshape(n_layers, int(np.sqrt(npos)), -1)
+
+    return img
+
+
 def class_assignment(mask, t1=0.5, t2=0.5):
     """
     Assign class labels from multi-label segmentation predictions
