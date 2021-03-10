@@ -48,10 +48,9 @@ class Postprocessor():
 
         mask_output = watershed_shape(mask_pred_binary, mask_labels, thresh=self.p)
         mask_final = watershed_seed(img=-ndi.distance_transform_edt(mask_pred_binary),
-                                    mask=mask_output,
-                                    seg_region=seg_region)
+                                        mask=mask_output,
+                                        seg_region=seg_region)
         mask_final = opening(mask_final, square(3))
-
         return mask_final
 
 
@@ -119,32 +118,35 @@ def watershed_shape(mask, mask_labels, thresh=0.1):
 
         return labels_binary
 
-    mask_output = np.zeros_like(mask)
-    unique_label = np.unique(mask_labels)[1:]
+    try:
+        mask_output = np.zeros_like(mask)
+        unique_label = np.unique(mask_labels)[1:]
 
-    convex_labels, concave_labels = [], []
-    diameters = []
-    for i in unique_label:
-        indep_mask = (mask_labels == i).astype(np.float)
-        mask_convex = convex_hull_image(indep_mask).astype(np.float)
-        solidity = (indep_mask).sum() / (mask_convex).sum()
-        if solidity > thresh:
-            dm = np.sqrt(indep_mask.sum() / np.pi) * 2  # "diameter" of "convex-like" masks
-            diameters.append(dm)
-            mask_output[indep_mask == 1] = 1
-            convex_labels.append(i)
-        else:
-            concave_labels.append(i)
+        convex_labels, concave_labels = [], []
+        diameters = []
+        for i in unique_label:
+            indep_mask = (mask_labels == i).astype(np.float)
+            mask_convex = convex_hull_image(indep_mask).astype(np.float)
+            solidity = (indep_mask).sum() / (mask_convex).sum()
+            if solidity > thresh:
+                dm = np.sqrt(indep_mask.sum() / np.pi) * 2  # "diameter" of "convex-like" masks
+                diameters.append(dm)
+                mask_output[indep_mask == 1] = 1
+                convex_labels.append(i)
+            else:
+                concave_labels.append(i)
 
-    avg_mask_area = np.vectorize(lambda x: (mask_labels == x).sum())(np.array(convex_labels)).mean()
-    ft_size = int(np.round(np.mean(diameters)))
-    for label in concave_labels:
-        indep_mask = (mask_labels == label).astype(np.float)
-        if (indep_mask).sum() > avg_mask_area:
-            mask_ws = watershed_indep_mask(indep_mask, ft_size=ft_size)
-            mask_output[mask_ws == 1] = 1
-        else:
-            mask_output[indep_mask == 1] = 1
+        avg_mask_area = np.vectorize(lambda x: (mask_labels == x).sum())(np.array(convex_labels)).mean()
+        ft_size = int(np.round(np.mean(diameters)))
+        for label in concave_labels:
+            indep_mask = (mask_labels == label).astype(np.float)
+            if (indep_mask).sum() > avg_mask_area:
+                mask_ws = watershed_indep_mask(indep_mask, ft_size=ft_size)
+                mask_output[mask_ws == 1] = 1
+            else:
+                mask_output[indep_mask == 1] = 1
+    except ValueError:
+        mask_output = np.zeros_like(mask)
 
     return mask_output
 
@@ -174,26 +176,30 @@ def watershed_seed(img, mask, seg_region=None, min_area=5, sigma=-1, return_bina
     -------
     prediction matrix after the seeded watershed , shape=(h, w)
     """
-    if sigma > 0:  # Perform gaussian blur on input image
-        img = ndi.gaussian_filter(img, sigma=sigma)
+    try:
+        if sigma > 0:  # Perform gaussian blur on input image
+            img = ndi.gaussian_filter(img, sigma=sigma)
 
-    # Find centroids of each individual first-round watershed mask
-    mask_labels = ndi.label(mask)[0]
-    unique_mask_labels = pd.Series(np.unique(mask_labels)[1:])
-    mask_coords_raw = unique_mask_labels.apply(lambda label: np.vectorize(lambda mask: mask == label)(mask_labels))
+        # Find centroids of each individual first-round watershed mask
+        mask_labels = ndi.label(mask)[0]
+        unique_mask_labels = pd.Series(np.unique(mask_labels)[1:])
+        mask_coords_raw = unique_mask_labels.apply(lambda label: np.vectorize(lambda mask: mask == label)(mask_labels))
 
-    # Filter out tiny contours (noises)
-    mask_coords = mask_coords_raw[mask_coords_raw.apply(lambda x: (x == True).sum() > min_area)]
+        # Filter out tiny contours (noises)
+        mask_coords = mask_coords_raw[mask_coords_raw.apply(lambda x: (x == True).sum() > min_area)]
 
-    raw_seeds = mask_coords.apply(lambda x: np.array(np.where(x == True)).mean(1).astype(np.int16))
-    seeds = np.stack(raw_seeds.to_numpy())
-    marker_bools = np.zeros_like(img)
-    marker_bools[tuple(seeds.T)] = 1
-    marker_bools = dilation(marker_bools, disk(2))
-    markers = ndi.label(marker_bools)[0]
+        raw_seeds = mask_coords.apply(lambda x: np.array(np.where(x == True)).mean(1).astype(np.int16))
+        seeds = np.stack(raw_seeds.to_numpy())
+        marker_bools = np.zeros_like(img)
+        marker_bools[tuple(seeds.T)] = 1
+        marker_bools = dilation(marker_bools, disk(2))
+        markers = ndi.label(marker_bools)[0]
 
-    # second-round watershed: markers selected as the centroids of the first-round watershed
-    labels = watershed(img, markers=markers, mask=seg_region, watershed_line=True)
-    labels_binary = (labels > 0).astype('float')
+        # second-round watershed: markers selected as the centroids of the first-round watershed
+        labels = watershed(img, markers=markers, mask=seg_region, watershed_line=True)
+        labels_binary = (labels > 0).astype('float')
+    except ValueError:
+        labels = np.zeros_like(mask)
+        labels_binary = np.zeros_like(mask)
 
     return labels_binary if return_binary else labels

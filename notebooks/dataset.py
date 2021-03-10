@@ -455,7 +455,7 @@ class MaskPreprocessor():
             img_binary = self._binarize_multi_channel(self.img.transpose((2, 0, 1)))
 
         # Perform different third-label augmentation for nuclei and membrane masks
-        if self.img_type == 'nujclei':
+        if self.img_type == 'nuclei':
             img_processed = self._label_augment(img_binary)
         else:
             img_binary = self._close_border(img_binary)

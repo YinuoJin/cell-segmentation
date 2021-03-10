@@ -33,7 +33,7 @@ if __name__ == '__main__':
 from mayavi import mlab
 
 @mlab.show
-def plot_3d(img, slice=False, axis='z'):
+def plot_3d(img, slice=False, axis='z', color=None):
     """Visualize 3D segmentation results in mayavi from saved numpy file"""
     try:
         assert img.ndim == 3, "Invalid dimension of 3D image: {}".format(img_3d.ndim)
@@ -41,7 +41,10 @@ def plot_3d(img, slice=False, axis='z'):
         if slice:
             res = mlab.volume_slice(img, colormap='jet') if axis == 'z' else mlab.volume_slice(img.transpose((1,2,0)), colormap='jet')
         else:
-            res = mlab.contour3d(img.transpose((1,2,0)), contours=10, transparent=True)
+            if color is not None:
+                res = mlab.contour3d(img.transpose((1,2,0)), color=color)
+            else:
+                res = mlab.contour3d(img.transpose((1,2,0)), contours=10, transparent=True)
         mlab.axes(line_width=0.5)
         mlab.outline()
     except FileNotFoundError:
@@ -49,7 +52,8 @@ def plot_3d(img, slice=False, axis='z'):
 
     return res
 
-
+"""
 if __name__ == '__main__':
     img = recover_3d
     plot_3d(args.file_name, slice=args.slice, axis=args.axis)
+"""

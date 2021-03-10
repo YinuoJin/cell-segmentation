@@ -24,7 +24,7 @@ required arguments:
   -i ROOT_PATH          Root directory of input image datasets for training/testing
   --option OPTION       Training option: (1). binary, (2). multi
   --image-type IMAGE_TYPE
-                        Image type: (1). nuclei, (2). mask
+                        Image type: (1). nuclei, (2). membrane
 
 optional arguments:
   -o OUT_PATH           Directory to output file

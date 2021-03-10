@@ -47,7 +47,6 @@ def train(args):
     print('Loading datasets...')
     print('- Training set:')
     train_dataloader, train_distmap = load_data(root_path=args.root_path,
-                                                model_path=args.model_path,
                                                 image_type=args.image_type,
                                                 frame='train_frames',
                                                 mask='train_masks',
@@ -57,7 +56,6 @@ def train(args):
                                                 return_dist=args.dist)
     print('- Validation set:')
     val_dataloader, val_distmap = load_data(root_path=args.root_path,
-                                            model_path=args.model_path,
                                             image_type=args.image_type,
                                             frame='val_frames',
                                             mask='val_masks',
@@ -304,7 +302,7 @@ if __name__ == '__main__':
     required.add_argument('--option', dest='option', type=str, required=True, action='store',
                         help='Training option: (1). binary, (2). multi')
     required.add_argument('--image-type', dest='image_type', type=str, default='nuclei', required=True, action='store',
-                         help='Image type: (1). nuclei, (2). mask')
+                         help='Image type: (1). nuclei, (2). membrane')
     
     optional = parser.add_argument_group('optional arguments')
     optional.add_argument('-o', dest='out_path', type=str, default='./', action='store',
