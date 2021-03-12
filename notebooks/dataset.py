@@ -671,7 +671,7 @@ def load_data(root_path,
               cutoff_perc=False,
               erode_mask=False,
               thresh_option='mean',
-              return_dist=None):
+              return_dist=False):
     """
     Load images from directory, preprocess & initialize into dataloader object
 
@@ -778,7 +778,7 @@ def load_data(root_path,
     dataloader = data.DataLoader(dataset, batch_size=batch_size)
     distset = data.DataLoader(distset, batch_size=batch_size)
 
-    return dataloader if return_dist is None else (dataloader, distset)
+    return dataloader if return_dist is False else (dataloader, distset)
 
 
 def read_images(name1, name2, h, w,
