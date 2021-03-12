@@ -257,7 +257,6 @@ class SoftDiceLoss(nn.Module):
         y_pred : torch.Tensor
             predicted matrix, shape: [B, C, H, W], C = 1
         """
-        print(weight.shape, y_true.shape, y_pred.shape)
         intersection = torch.einsum('bchw,bchw->bc', y_true, y_pred)
         total = torch.einsum('bchw->bc', y_true) + torch.einsum('bchw->bc', y_pred)
 

@@ -745,7 +745,8 @@ def load_data(root_path,
     mask_names = sorted(os.listdir(mask_path))
 
     assert os.path.exists(frame_path) and os.path.exists(mask_path), "Image directory doesn't exist!!"
-    assert return_dist is None or \
+    assert return_dist is None or \     # without distance map, return uniform matrix
+           return dist is False or \    # without distance map, return dataloader object only
            return_dist == 'boundary' or \
            return_dist == 'dist' or \
            return_dist == 'saw', "Unrecognized return_dist option {0}".format(return_dist)
